@@ -34,7 +34,7 @@ Homebrew works on macOS and Linux. Without Homebrew, download the archive for yo
 
 `ats install` shows each change as a diff. It writes nothing before you agree:
 
-- instructions for the model: `~/.claude/ats.md` with an `@ats.md` line in `~/.claude/CLAUDE.md`, and a section in `~/.codex/AGENTS.md`;
+- instructions for the model: `~/.claude/ats.md` with an `@ats.md` line in `~/.claude/CLAUDE.md`; for Codex, full guidance in `~/.codex/ATS.md` and a compact entrypoint in `~/.codex/AGENTS.md` that reads it for queued jobs or errors;
 - two reminder hooks in `~/.claude/settings.json` and `~/.codex/hooks.json`, which tell the agent about commands that still run or that ended;
 - a login service that starts the daemon: a LaunchAgent on macOS, a systemd user unit on Linux.
 
@@ -54,7 +54,7 @@ The model writes a heavy command as `ats run -- cargo build` or `ats run --sh 'n
 [ats] submission s_x job j_y is running; log: ...; check with: ats wait s_x
 ```
 
-and exits with code 75. The command continues in the background. Other exit codes of `ats`: 76 when a predecessor given with `--after` failed, 77 when `ats` did not accept the submission, 78 when `ats` failed.
+and exits with code 75. The command continues in the background. When ats's diagnostic output confirms the cause, 76 means a predecessor given with `--after` failed, 77 means ats rejected the submission, and 78 means ats failed. Completed commands return their own exit codes unchanged and may use the same numbers.
 
 | Command | |
 |---|---|

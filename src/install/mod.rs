@@ -51,7 +51,7 @@ Run other commands directly: `ls`, `cat`, `cd`, `mkdir`, `cp`, `mv`, `git status
 
 - When the command ends in 90 seconds or less, ats gives its output and exit code unchanged.
 - Exit code 75 and an `[ats] submission ...` line: the command continues in the background. Run `ats wait <submission>` to get its output and exit code. Each call waits for up to 90 seconds. If you do not need the result now, run `ats detach <submission>`. You are told at your next turn when it ends.
-- Exit code 76: a predecessor given with `--after` failed. 77: ats did not accept the submission. 78: ats failed.
+- Interpret 76 as an `--after` predecessor failure, 77 as rejection and 78 as an ats failure only when ats's diagnostic output confirms that cause. Completed commands return their own exit codes unchanged and may use the same numbers.
 - Run `ats why <submission>` to see why a command waits. Do not use `ats run --now` unless the user asks to run something immediately.";
 
 /// Hook events ats answers, with their `ats hook` names.
@@ -107,10 +107,12 @@ fn files(home: &Path, agent: Agent) -> (PathBuf, PathBuf) {
     }
 }
 
-/// The instructions file CLAUDE.md imports. Codex does not expand imports
-/// in AGENTS.md, so its instructions are written in place.
-fn include_file(home: &Path) -> PathBuf {
-    home.join(".claude/ats.md")
+/// Full command guidance, imported by Claude and read on demand by Codex.
+fn include_file(home: &Path, agent: Agent) -> PathBuf {
+    match agent {
+        Agent::Claude => home.join(".claude/ats.md"),
+        Agent::Codex => home.join(".codex/ATS.md"),
+    }
 }
 
 /// The agents named, or else those set up on this machine.
@@ -233,11 +235,10 @@ fn without_block(text: &str) -> String {
 }
 
 /// `text` with ats's instruction block at the end.
-fn with_block(text: &str) -> String {
+fn with_block(text: &str, block: &str) -> String {
     let base = without_block(text);
-    let block = instructions_block();
     if base.trim().is_empty() {
-        block
+        block.to_string()
     } else {
         format!("{}\n\n{block}", base.trim_end_matches('\n'))
     }
@@ -247,6 +248,17 @@ fn with_block(text: &str) -> String {
 /// instructions file and to find again for removal (`ats instructions`).
 pub fn instructions_block() -> String {
     format!("{BEGIN}\n{INSTRUCTIONS}\n{END}\n")
+}
+
+fn codex_block(home: &Path) -> String {
+    let reference = include_file(home, Agent::Codex);
+    format!(
+        "{BEGIN}\n\
+Use `ats run -- <program> <args>` or `ats run --sh '<command>'` for resource-heavy or >30s commands. Put `cd` before ats; small or interactive commands and persistent servers bypass ats.\n\
+For queued jobs or ats errors, read and follow `{}`. Use `--now` only when asked.\n\
+{END}\n",
+        reference.display()
+    )
 }
 
 /// `text` without the import line, or a block an earlier version wrote.
@@ -363,17 +375,15 @@ pub fn install(
             old,
         });
         let old = read(&instructions)?;
+        let file = include_file(home, agent);
+        changes.push(Change {
+            old: read(&file)?,
+            new: Some(format!("{INSTRUCTIONS}\n")),
+            path: file,
+        });
         let new = match agent {
-            Agent::Claude => {
-                let file = include_file(home);
-                changes.push(Change {
-                    old: read(&file)?,
-                    new: Some(format!("{INSTRUCTIONS}\n")),
-                    path: file,
-                });
-                with_include(old.as_deref().unwrap_or_default())
-            }
-            Agent::Codex => with_block(old.as_deref().unwrap_or_default()),
+            Agent::Claude => with_include(old.as_deref().unwrap_or_default()),
+            Agent::Codex => with_block(old.as_deref().unwrap_or_default(), &codex_block(home)),
         };
         changes.push(Change {
             path: instructions,
@@ -445,15 +455,13 @@ pub fn uninstall(
                 old: Some(old),
             });
         }
-        if agent == Agent::Claude {
-            let file = include_file(home);
-            if let Some(old) = read(&file)? {
-                changes.push(Change {
-                    path: file,
-                    old: Some(old),
-                    new: None,
-                });
-            }
+        let file = include_file(home, agent);
+        if let Some(old) = read(&file)? {
+            changes.push(Change {
+                path: file,
+                old: Some(old),
+                new: None,
+            });
         }
     }
     let service = service::file(home);
@@ -666,7 +674,7 @@ mod tests {
             "# Mine\n\nKeep this.\n\n@ats.md\n"
         );
         assert!(
-            std::fs::read_to_string(include_file(&home))
+            std::fs::read_to_string(include_file(&home, Agent::Claude))
                 .unwrap()
                 .contains("ats run --")
         );
@@ -702,7 +710,7 @@ mod tests {
             std::fs::read_to_string(&instructions).unwrap(),
             "# Mine\n\nKeep this.\n"
         );
-        assert!(!include_file(&home).exists() && !service::file(&home).exists());
+        assert!(!include_file(&home, Agent::Claude).exists() && !service::file(&home).exists());
     }
 
     fn read_json_str(text: &str) -> Value {
@@ -788,13 +796,13 @@ mod tests {
         );
         assert!(
             !home.join(".claude/CLAUDE.md").exists()
-                && !include_file(&home).exists()
+                && !include_file(&home, Agent::Claude).exists()
                 && !paths.installed.exists()
         );
     }
 
     #[test]
-    fn codex_gets_its_instructions_in_place_and_loses_them_again() {
+    fn codex_gets_a_compact_entrypoint_and_full_reference_then_removes_both() {
         let (_dir, paths, home) = setup();
         let ats = Path::new("/Applications/My Tools/ats");
         run(
@@ -818,6 +826,15 @@ mod tests {
         );
         let agents_md = std::fs::read_to_string(home.join(".codex/AGENTS.md")).unwrap();
         assert!(agents_md.starts_with(BEGIN) && agents_md.contains("ats run --"));
+        assert!(agents_md.contains(&format!(
+            "`{}`",
+            include_file(&home, Agent::Codex).display()
+        )));
+        assert!(!agents_md.contains("model training or inference"));
+        assert_eq!(
+            std::fs::read_to_string(include_file(&home, Agent::Codex)).unwrap(),
+            format!("{INSTRUCTIONS}\n")
+        );
         run(
             |i, o| {
                 uninstall(
@@ -833,8 +850,64 @@ mod tests {
             "y\n",
         );
         assert!(
-            !home.join(".codex/hooks.json").exists() && !home.join(".codex/AGENTS.md").exists()
+            !home.join(".codex/hooks.json").exists()
+                && !home.join(".codex/AGENTS.md").exists()
+                && !include_file(&home, Agent::Codex).exists()
         );
+    }
+
+    #[test]
+    fn codex_reinstall_replaces_legacy_inline_guidance_and_preserves_user_rules() {
+        let (_dir, paths, home) = setup();
+        std::fs::create_dir_all(home.join(".codex")).unwrap();
+        let file = home.join(".codex/AGENTS.md");
+        let original = "# Mine\n\nKeep these user rules.\n";
+        std::fs::write(&file, format!("{original}\n{}", instructions_block())).unwrap();
+        let ats = Path::new("/opt/ats");
+        let mut out = Vec::new();
+        install(
+            &paths,
+            &home,
+            &[Agent::Codex],
+            ats,
+            false,
+            Confirm::Yes,
+            &mut out,
+        )
+        .unwrap();
+        let installed = std::fs::read_to_string(&file).unwrap();
+        assert!(installed.starts_with(original));
+        assert_eq!(installed.matches(BEGIN).count(), 1);
+        assert!(!installed.contains("model training or inference"));
+        out.clear();
+        install(
+            &paths,
+            &home,
+            &[Agent::Codex],
+            ats,
+            false,
+            Confirm::Yes,
+            &mut out,
+        )
+        .unwrap();
+        assert!(
+            String::from_utf8(out)
+                .unwrap()
+                .contains("Nothing to change.")
+        );
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), installed);
+        uninstall(
+            &paths,
+            &home,
+            &[Agent::Codex],
+            false,
+            false,
+            Confirm::Yes,
+            &mut Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(std::fs::read_to_string(file).unwrap(), original);
+        assert!(!include_file(&home, Agent::Codex).exists());
     }
 
     #[test]
@@ -877,7 +950,10 @@ mod tests {
             shown.contains("+@ats.md") && shown.ends_with("Nothing written (dry run).\n"),
             "{shown}"
         );
-        assert!(!home.join(".claude/settings.json").exists() && !include_file(&home).exists());
+        assert!(
+            !home.join(".claude/settings.json").exists()
+                && !include_file(&home, Agent::Claude).exists()
+        );
         let mut out = Vec::new();
         install(
             &paths,
@@ -889,7 +965,10 @@ mod tests {
             &mut out,
         )
         .unwrap();
-        assert!(include_file(&home).exists() && home.join(".claude/settings.json").exists());
+        assert!(
+            include_file(&home, Agent::Claude).exists()
+                && home.join(".claude/settings.json").exists()
+        );
     }
 
     #[test]

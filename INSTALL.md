@@ -54,6 +54,8 @@ Run `ats --version`. If the shell does not find `ats`, tell the user to add the 
 
 This adds the instructions for the model, two reminder hooks, and a login service that starts the daemon. The login service is a LaunchAgent on macOS and a systemd user unit on Linux.
 
+For Codex, full guidance goes in `~/.codex/ATS.md`; the managed section in `~/.codex/AGENTS.md` contains only the scheduling trigger and a reference to read for queued jobs or errors. Reinstalling updates these files, and uninstalling removes the managed section and its reference file.
+
 ### A different agent
 
 1. Run `ats install --service --dry-run`. Show the diff to the user and ask. If the user agrees, run `ats install --service --yes`. This adds the login service.

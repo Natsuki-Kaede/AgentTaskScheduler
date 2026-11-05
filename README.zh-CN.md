@@ -34,7 +34,7 @@ Homebrew 在 macOS 和 Linux 上都能用。没有 Homebrew 时，从 [Releases]
 
 `ats install` 把每处改动以 diff 展示，你同意前不写入任何文件：
 
-- 给模型的指令：`~/.claude/ats.md`，加上 `~/.claude/CLAUDE.md` 里的一行 `@ats.md`；以及 `~/.codex/AGENTS.md` 里的一节；
+- 给模型的指令：`~/.claude/ats.md`，加上 `~/.claude/CLAUDE.md` 里的一行 `@ats.md`；Codex 的完整说明写入 `~/.codex/ATS.md`，`~/.codex/AGENTS.md` 只保留简短入口，在任务排队或出错时读取；
 - `~/.claude/settings.json` 和 `~/.codex/hooks.json` 里的两个提醒 hook，告诉 agent 哪些命令还在跑、哪些已经结束；
 - 启动守护进程的登录服务：macOS 上是 LaunchAgent，Linux 上是 systemd 用户服务。
 
@@ -54,7 +54,7 @@ Codex 下次启动时会请你信任改动过的 hook。
 [ats] submission s_x job j_y is running; log: ...; check with: ats wait s_x
 ```
 
-并以退出码 75 退出，命令继续在后台运行。`ats` 的其他退出码：76 表示 `--after` 指定的前置任务失败，77 表示 `ats` 没有接受这次提交，78 表示 `ats` 自身出错。
+并以退出码 75 退出，命令继续在后台运行。仅在 ats 诊断输出确认原因时，将 76 解释为 `--after` 指定的前置任务失败、77 解释为提交被拒绝、78 解释为 ats 自身出错。已结束的命令会原样返回自身退出码，也可能使用这些数字。
 
 | 命令 | |
 |---|---|
