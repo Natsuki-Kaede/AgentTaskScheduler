@@ -27,7 +27,7 @@ fn sysctl<T: Copy>(name: &str) -> Option<T> {
 /// The kernel's page size, which page counts use. `hw.pagesize` gives the
 /// page size of this process instead: 4 KB under Rosetta on 16 KB kernels.
 fn page_size() -> u64 {
-    sysctl::<u64>("vm.pagesize").unwrap_or(16384)
+    sysctl::<u32>("vm.pagesize").map(u64::from).unwrap_or(16384)
 }
 
 pub fn system() -> Option<System> {
@@ -145,6 +145,10 @@ mod tests {
 
     #[test]
     fn reads_this_machine_and_this_process() {
+        assert_eq!(
+            page_size(),
+            u64::from(sysctl::<u32>("vm.pagesize").unwrap())
+        );
         let s = system().unwrap();
         assert!(s.mem_total > 0 && s.mem_used > 0 && s.cores > 0);
         assert!(

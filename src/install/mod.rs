@@ -334,15 +334,36 @@ fn ask(input: &mut dyn BufRead, out: &mut impl Write, question: &str) -> Result<
     Ok(matches!(line.trim(), "y" | "Y" | "yes"))
 }
 
-/// With `start`, the login service is loaded once it is written.
-pub fn install(
+/// With `start`, ensure the login service is loaded, including on a retry
+/// whose files already match after an earlier service-start failure.
+pub fn install<W: Write>(
     paths: &Paths,
     home: &Path,
     agents: &[Agent],
     ats: &Path,
     start: bool,
     confirm: Confirm,
-    out: &mut impl Write,
+    out: &mut W,
+) -> Result<()> {
+    install_with(
+        paths,
+        home,
+        agents,
+        ats,
+        start.then_some(|changed, out: &mut W| service::load(home, changed, out)),
+        confirm,
+        out,
+    )
+}
+
+fn install_with<W: Write>(
+    paths: &Paths,
+    home: &Path,
+    agents: &[Agent],
+    ats: &Path,
+    start: Option<impl FnOnce(bool, &mut W) -> Result<()>>,
+    confirm: Confirm,
+    out: &mut W,
 ) -> Result<()> {
     let mut record = Record::load(paths)?;
     let mut changes = Vec::new();
@@ -406,11 +427,16 @@ pub fn install(
     for note in &notes {
         writeln!(out, "Note: {note}")?;
     }
-    if let Some(changes) = review(changes, confirm, out)? {
-        write(paths, &changes, &record, out)?;
-        if start {
-            service::load(home, changed, out)?;
-        }
+    let unchanged = changes.iter().all(|c| c.old == c.new);
+    let dry_run = matches!(&confirm, Confirm::DryRun);
+    let approved = review(changes, confirm, out)?;
+    if let Some(changes) = &approved {
+        write(paths, changes, &record, out)?;
+    }
+    if let Some(start) = start
+        && (approved.is_some() || (unchanged && !dry_run))
+    {
+        start(changed, out)?;
     }
     Ok(())
 }
@@ -571,28 +597,130 @@ fn write_atomic(path: &Path, text: &str) -> Result<()> {
 }
 
 /// A unified diff from the system's `diff`.
+struct DiffFiles {
+    old: tempfile::NamedTempFile,
+    new: tempfile::NamedTempFile,
+    // Drop files before removing the private directory.
+    _dir: tempfile::TempDir,
+}
+
+impl DiffFiles {
+    fn new(old: &str, new: &str) -> Result<Self> {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::Builder::new()
+            .prefix("ats-install-")
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir()?;
+        let mut a = tempfile::NamedTempFile::new_in(dir.path())?;
+        let mut b = tempfile::NamedTempFile::new_in(dir.path())?;
+        a.write_all(old.as_bytes())?;
+        b.write_all(new.as_bytes())?;
+        Ok(Self {
+            old: a,
+            new: b,
+            _dir: dir,
+        })
+    }
+}
+
 fn diff(path: &Path, old: &str, new: &str) -> Result<String> {
-    static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!("ats-install-{}-{call}", std::process::id()));
-    std::fs::create_dir_all(&dir)?;
-    let (a, b) = (dir.join("old"), dir.join("new"));
-    std::fs::write(&a, old)?;
-    std::fs::write(&b, new)?;
+    let files = DiffFiles::new(old, new)?;
     let label = path.display().to_string();
     let output = std::process::Command::new("diff")
         .args(["-u", "--label", &label, "--label", &label])
-        .arg(&a)
-        .arg(&b)
+        .arg(files.old.path())
+        .arg(files.new.path())
         .output()
         .context("running diff")?;
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retries_the_service_after_files_were_written() {
+        let (_dir, paths, home) = setup();
+        let mut out = Vec::new();
+        let ats = Path::new("/opt/ats");
+        let count = std::cell::Cell::new(0);
+        let result = install_with(
+            &paths,
+            &home,
+            &[Agent::Codex],
+            ats,
+            Some(|changed: bool, _: &mut Vec<u8>| {
+                assert!(changed);
+                count.set(count.get() + 1);
+                anyhow::bail!("service start denied")
+            }),
+            Confirm::Yes,
+            &mut out,
+        );
+        assert!(result.unwrap_err().to_string().contains("denied"));
+        out.clear();
+        install_with(
+            &paths,
+            &home,
+            &[Agent::Codex],
+            ats,
+            Some(|changed: bool, _: &mut Vec<u8>| {
+                assert!(!changed);
+                count.set(count.get() + 1);
+                Ok(())
+            }),
+            Confirm::Yes,
+            &mut out,
+        )
+        .unwrap();
+        assert_eq!(count.get(), 2);
+        assert!(
+            String::from_utf8(out)
+                .unwrap()
+                .contains("Nothing to change.")
+        );
+
+        // Neither a no-op dry run nor declining real changes starts it.
+        for (confirm, binary) in [
+            (Confirm::DryRun, ats),
+            (Confirm::Ask(&mut b"n\n".as_slice()), Path::new("/new/ats")),
+        ] {
+            install_with(
+                &paths,
+                &home,
+                &[Agent::Codex],
+                binary,
+                Some(|_, _: &mut Vec<u8>| -> Result<()> { panic!("service should not start") }),
+                confirm,
+                &mut Vec::new(),
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn diff_inputs_are_private_and_removed_on_drop() {
+        use std::os::unix::fs::PermissionsExt;
+        let files = DiffFiles::new("credential", "new credential").unwrap();
+        let dir = files._dir.path().to_path_buf();
+        assert_eq!(
+            std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        for file in [&files.old, &files.new] {
+            assert_eq!(
+                file.as_file().metadata().unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(files.old.path()).unwrap(),
+            "credential"
+        );
+        drop(files);
+        assert!(!dir.exists());
+    }
 
     const SETTINGS: &str = r#"{
   "$schema": "https://example.com/settings.json",

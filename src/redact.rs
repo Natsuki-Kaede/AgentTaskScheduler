@@ -28,6 +28,10 @@ pub fn command_words(words: &[String]) -> Vec<String> {
             hide_next = false;
             continue;
         }
+        if let Some(header) = redact_header(word) {
+            out.push(header);
+            continue;
+        }
         if word.eq_ignore_ascii_case("bearer") {
             hide_next = true;
             out.push(word.clone());
@@ -46,6 +50,21 @@ pub fn command_words(words: &[String]) -> Vec<String> {
         out.push(word.clone());
     }
     out
+}
+
+fn redact_header(word: &str) -> Option<String> {
+    let (prefix, header) = if let Some(header) = word.strip_prefix("--header=") {
+        ("--header=", header)
+    } else if let Some(header) = word.strip_prefix("-H") {
+        ("-H", header)
+    } else {
+        ("", word)
+    };
+    let (name, value) = header.split_once(':')?;
+    ((name.trim().eq_ignore_ascii_case("authorization")
+        || name.trim().eq_ignore_ascii_case("proxy-authorization"))
+        && !value.trim().is_empty())
+    .then(|| format!("{prefix}{name}: [redacted]"))
 }
 
 /// Redacts complete shell words, including quoted and escaped whitespace.
@@ -130,6 +149,32 @@ mod tests {
         assert_eq!(
             command_words(&["tool".into(), "--password".into(), "first second".into()]),
             ["tool", "--password", "[redacted]"]
+        );
+    }
+
+    #[test]
+    fn redacts_credentials_inside_header_arguments() {
+        for header in [
+            "Authorization: Bearer secret",
+            "authorization:Bearer secret==",
+            "Proxy-Authorization: Basic secret",
+            "--header=Authorization: Bearer secret",
+            "-HAuthorization: Bearer secret",
+        ] {
+            let words = vec!["curl".into(), "-H".into(), header.into()];
+            let redacted = command_words(&words).join(" ");
+            assert!(!redacted.contains("secret"), "{header}: {redacted}");
+            assert!(redacted.contains("[redacted]"));
+        }
+        assert_eq!(
+            shell_source(
+                "cargo build && curl -H 'Authorization: Bearer secret' https://example.invalid"
+            ),
+            "cargo build && curl -H Authorization: [redacted] https://example.invalid"
+        );
+        assert_eq!(
+            command_words(&["Accept: application/json".into()]),
+            ["Accept: application/json"]
         );
     }
 }

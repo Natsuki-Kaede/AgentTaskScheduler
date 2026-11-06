@@ -63,31 +63,21 @@ impl Lock {
 /// path does not exist yet. macOS volumes are case-insensitive by default,
 /// so paths compare in lower case there.
 pub fn normalize(path: &Path) -> String {
-    let mut lexical = PathBuf::new();
+    let mut full = PathBuf::new();
     for c in path.components() {
         match c {
             Component::ParentDir => {
-                lexical.pop();
+                full.pop();
             }
             Component::CurDir => {}
-            other => lexical.push(other),
+            other => {
+                full.push(other);
+                if let Ok(real) = full.canonicalize() {
+                    full = real;
+                }
+            }
         }
     }
-    let mut existing = lexical.as_path();
-    let mut rest = Vec::new();
-    let real = loop {
-        if let Ok(real) = existing.canonicalize() {
-            break real;
-        }
-        match (existing.parent(), existing.file_name()) {
-            (Some(parent), Some(name)) => {
-                rest.push(name.to_owned());
-                existing = parent;
-            }
-            _ => break existing.to_path_buf(),
-        }
-    };
-    let full = rest.iter().rev().fold(real, |p, n| p.join(n));
     let text = full.to_string_lossy().into_owned();
     if cfg!(target_os = "macos") {
         text.to_lowercase()
@@ -206,6 +196,19 @@ mod tests {
                 format!("{real}/target")
             );
         }
+    }
+
+    #[test]
+    fn resolves_symlinks_before_parent_components() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("real/child");
+        std::fs::create_dir_all(&target).unwrap();
+        std::os::unix::fs::symlink(&target, dir.path().join("link")).unwrap();
+        let alias = Lock::path(&dir.path().join("link/../missing/output"));
+        let real = Lock::path(&dir.path().join("real/missing/output"));
+        assert_eq!(alias, real);
+        assert!(alias.conflicts(&real));
+        assert!(!alias.conflicts(&Lock::path(&dir.path().join("missing/output"))));
     }
 
     #[test]

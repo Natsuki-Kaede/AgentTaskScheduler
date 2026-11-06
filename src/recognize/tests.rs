@@ -4,6 +4,56 @@
 use super::*;
 use crate::profile::Profiles;
 
+#[test]
+fn directory_changes_follow_shell_scopes() {
+    let dir = tempfile::tempdir().unwrap();
+    let profiles = Profiles::builtin();
+    let recognizer = Recognizer::new(&profiles, &[]);
+    for (source, changes_parent) in [
+        ("sh -c 'cd /tmp; make'; make", false),
+        ("(cd /tmp; make); make", false),
+        ("{ cd /tmp; make; }; make", true),
+        ("echo $(cd /tmp; pwd); make", false),
+        ("cat <(cd /tmp; pwd); make", false),
+        ("cd /tmp | cat; make", false),
+        ("cd /tmp & make", false),
+        ("cd /tmp; make", true),
+    ] {
+        let analysis = recognizer.shell(source, dir.path());
+        assert!(
+            analysis.unclear.is_none(),
+            "{source}: {:?}",
+            analysis.unclear
+        );
+        assert_eq!(
+            analysis.segments.last().unwrap().cwd,
+            if changes_parent {
+                Path::new("/tmp")
+            } else {
+                dir.path()
+            },
+            "{source}"
+        );
+    }
+
+    // Every npm lifecycle script starts at the package root in its own shell.
+    std::fs::create_dir(dir.path().join("src")).unwrap();
+    std::fs::write(
+        dir.path().join("package.json"),
+        r#"{"scripts":{"prebuild":"cd /tmp; make","build":"make","postbuild":"make"}}"#,
+    )
+    .unwrap();
+    let cwd = dir.path().join("src");
+    let analysis = recognizer.shell("npm run build; make", &cwd);
+    let makes: Vec<_> = analysis
+        .segments
+        .iter()
+        .filter(|s| s.tool.as_deref() == Some("make"))
+        .map(|s| s.cwd.as_path())
+        .collect();
+    assert_eq!(makes, [Path::new("/tmp"), dir.path(), dir.path(), &cwd]);
+}
+
 /// A compact rendering of the structure: tools in order, with `seq`, `par`
 /// and `bg` showing how they overlap.
 fn render(a: &Analysis) -> String {

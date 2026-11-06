@@ -15,15 +15,57 @@ pub fn alive(pid: i32, start: &str) -> bool {
 }
 
 /// True when any process in the group still exists.
+#[cfg(test)]
 pub fn group_alive(pgid: i32) -> bool {
     // SAFETY: signal 0 only checks for existence.
     unsafe { libc::kill(-pgid, 0) == 0 }
 }
 
-pub fn signal_group(pgid: i32, sig: i32) {
-    // SAFETY: sends a signal to a job's own process group.
-    unsafe {
-        libc::kill(-pgid, sig);
+/// Processes observed in a job's group and their descendants. Identities
+/// survive a descendant changing its group or being reparented.
+#[derive(Default)]
+pub struct Family {
+    members: std::collections::HashMap<i32, String>,
+}
+
+impl Family {
+    pub fn observe(&mut self, pgid: i32, processes: &[Proc]) {
+        self.members
+            .retain(|pid, start| processes.iter().any(|p| p.pid == *pid && p.start == *start));
+        for p in processes.iter().filter(|p| p.pgid == pgid) {
+            self.members.insert(p.pid, p.start.clone());
+        }
+        loop {
+            let mut added = false;
+            for p in processes {
+                if !self.members.contains_key(&p.pid) && self.members.contains_key(&p.ppid) {
+                    self.members.insert(p.pid, p.start.clone());
+                    added = true;
+                }
+            }
+            if !added {
+                break;
+            }
+        }
+    }
+
+    pub fn refresh(&mut self, pgid: i32) {
+        self.observe(pgid, &list());
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.members.is_empty()
+    }
+
+    pub fn signal(&self, signal: i32) {
+        for (pid, start) in &self.members {
+            if alive(*pid, start) {
+                // SAFETY: this identity was observed as part of the job.
+                unsafe {
+                    libc::kill(*pid, signal);
+                }
+            }
+        }
     }
 }
 
@@ -53,6 +95,9 @@ mod imp {
             .get(stat.rfind(')')? + 1..)?
             .split_whitespace()
             .collect();
+        if matches!(fields.first(), Some(&"Z" | &"X")) {
+            return None;
+        }
         // Fields 4, 5 and 22 of proc(5), counted from the state (field 3).
         Some(Proc {
             pid,
@@ -95,6 +140,10 @@ mod imp {
         }
         // SAFETY: the call filled the whole struct.
         let i = unsafe { info.assume_init() };
+        // sys/proc.h: SZOMB. A zombie cannot run or hold output pipes.
+        if i.pbi_status == 5 {
+            return None;
+        }
         Some(Proc {
             pid,
             ppid: i.pbi_ppid as i32,
@@ -121,6 +170,24 @@ mod imp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retains_escaped_descendants_but_never_reused_pids() {
+        let process = |pid, ppid, pgid, start: &str| Proc {
+            pid,
+            ppid,
+            pgid,
+            start: start.into(),
+        };
+        let mut family = Family::default();
+        family.observe(10, &[process(10, 1, 10, "a"), process(11, 10, 11, "b")]);
+        family.observe(10, &[process(11, 1, 11, "b"), process(12, 11, 12, "c")]);
+        assert_eq!(family.members.len(), 2);
+        family.observe(10, &[process(11, 1, 11, "new"), process(12, 1, 12, "c")]);
+        assert_eq!(family.members.keys().copied().collect::<Vec<_>>(), [12]);
+        family.observe(10, &[]);
+        assert!(family.is_empty());
+    }
 
     #[test]
     fn recognizes_processes_by_start_time() {

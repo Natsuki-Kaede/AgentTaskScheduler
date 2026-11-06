@@ -228,14 +228,20 @@ async fn run_command(
     ));
 
     let mut canceled = false;
+    let mut family = procinfo::Family::default();
+    family.refresh(pgid);
+    let mut poll = tokio::time::interval(GROUP_POLL);
     let cancel = wait_for_cancel(&paths, &job);
     tokio::pin!(cancel);
-    let main = tokio::select! {
-        status = child.wait() => Some(exit_code(status?)),
-        () = &mut cancel => { canceled = true; None }
+    let main = loop {
+        tokio::select! {
+            status = child.wait() => break Some(exit_code(status?)),
+            () = &mut cancel => { canceled = true; break None; }
+            _ = poll.tick() => family.refresh(pgid),
+        }
     };
     if canceled {
-        stop_group(pgid).await;
+        stop_family(pgid, &mut family).await;
         let _ = child.wait().await;
         let _ = out.await;
         let _ = err.await;
@@ -257,13 +263,16 @@ async fn run_command(
         Ok::<(), anyhow::Error>(())
     };
     tokio::pin!(streams);
-    tokio::select! {
-        result = &mut streams => result?,
-        () = &mut cancel => {
-            stop_group(pgid).await;
-            streams.await?;
-            post(&paths, &format!("/v1/jobs/{job}/finished"), ended("canceled", Some(main))).await?;
-            return Ok(());
+    loop {
+        tokio::select! {
+            result = &mut streams => { result?; break; }
+            () = &mut cancel => {
+                stop_family(pgid, &mut family).await;
+                streams.await?;
+                post(&paths, &format!("/v1/jobs/{job}/finished"), ended("canceled", Some(main))).await?;
+                return Ok(());
+            }
+            _ = poll.tick() => family.refresh(pgid),
         }
     }
     post(
@@ -273,12 +282,13 @@ async fn run_command(
     )
     .await?;
 
-    // The job ends when every process in its group has exited (design 3).
-    while procinfo::group_alive(pgid) {
+    // Descendants can leave the original group while remaining job work.
+    family.refresh(pgid);
+    while !family.is_empty() {
         tokio::select! {
-            () = tokio::time::sleep(GROUP_POLL) => {}
+            _ = poll.tick() => family.refresh(pgid),
             () = &mut cancel => {
-                stop_group(pgid).await;
+                stop_family(pgid, &mut family).await;
                 post(&paths, &format!("/v1/jobs/{job}/finished"), ended("canceled", Some(main))).await?;
                 return Ok(());
             }
@@ -321,14 +331,19 @@ async fn wait_for_cancel(paths: &Paths, job: &str) {
     }
 }
 
-async fn stop_group(pgid: i32) {
-    procinfo::signal_group(pgid, libc::SIGTERM);
+async fn stop_family(pgid: i32, family: &mut procinfo::Family) {
     let deadline = tokio::time::Instant::now() + TERM_GRACE;
-    while procinfo::group_alive(pgid) && tokio::time::Instant::now() < deadline {
+    loop {
+        family.refresh(pgid);
+        if family.is_empty() {
+            return;
+        }
+        family.signal(if tokio::time::Instant::now() < deadline {
+            libc::SIGTERM
+        } else {
+            libc::SIGKILL
+        });
         tokio::time::sleep(GROUP_POLL).await;
-    }
-    if procinfo::group_alive(pgid) {
-        procinfo::signal_group(pgid, libc::SIGKILL);
     }
 }
 
@@ -540,6 +555,69 @@ mod tests {
             assert!(
                 procinfo::start_time(pids[1]).is_none(),
                 "background child survived: {redirect}"
+            );
+        }
+
+        // A descendant in a new session is still job work, with inherited
+        // pipes or with quiet output, before and after the main exits.
+        for (parent_seconds, quiet) in [(30, false), (1, false), (1, true)] {
+            let (s, j) = submit(&paths, "x").await;
+            let marker = dir.path().join("escaped.pids");
+            let _ = std::fs::remove_file(&marker);
+            let output = if quiet { "subprocess.DEVNULL" } else { "None" };
+            let source = format!(
+                "import os,pathlib,subprocess,time; child=subprocess.Popen(['sleep','30'],start_new_session=True,stdout={output},stderr={output}); pathlib.Path({}).write_text(str(os.getpid())+' '+str(child.pid)); time.sleep({parent_seconds})",
+                serde_json::to_string(&marker.to_string_lossy()).unwrap()
+            );
+            let spec = sh(&format!("exec python3 -c {}", crate::hook::quote(&source)));
+            let mut task = tokio::spawn(run(paths.clone(), j.clone(), spec, "/".into()));
+            let pids = tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    if let Ok(text) = std::fs::read_to_string(&marker) {
+                        let pids: Vec<i32> = text
+                            .split_whitespace()
+                            .filter_map(|p| p.parse().ok())
+                            .collect();
+                        if pids.len() == 2 {
+                            break pids;
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .unwrap();
+            tokio::time::sleep(GROUP_POLL * 2).await;
+            if parent_seconds == 1 {
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while procinfo::start_time(pids[0]).is_some() {
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                })
+                .await
+                .unwrap();
+                assert!(
+                    !task.is_finished(),
+                    "escaped child must keep the job running"
+                );
+            }
+            post(&paths, &format!("/v1/submissions/{s}/cancel"), json!({}))
+                .await
+                .unwrap();
+            let finished = tokio::time::timeout(Duration::from_secs(8), &mut task).await;
+            if finished.is_err() {
+                // SAFETY: these are the two processes owned by this test.
+                unsafe {
+                    libc::kill(pids[0], libc::SIGKILL);
+                    libc::kill(pids[1], libc::SIGKILL);
+                }
+                task.abort();
+            }
+            finished.unwrap().unwrap().unwrap();
+            assert_eq!(job(&paths, &j).await["state"], "canceled");
+            assert!(
+                procinfo::start_time(pids[1]).is_none(),
+                "escaped child survived"
             );
         }
 

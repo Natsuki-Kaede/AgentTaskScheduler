@@ -17,7 +17,12 @@ mod sched;
 pub use sched::{HELD, PRE_LEASE};
 
 const SCHEMA: &str = include_str!("schema.sql");
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
+const BACKGROUND_SCHEMA: &str = "CREATE TABLE background_processes (
+    pid INTEGER NOT NULL,
+    start TEXT NOT NULL,
+    PRIMARY KEY (pid, start)
+);";
 
 /// How long ended jobs, their records and logs are kept (design 11).
 pub const KEEP: std::time::Duration = std::time::Duration::from_secs(90 * 24 * 3600);
@@ -209,22 +214,55 @@ impl Store {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        if version > SCHEMA_VERSION {
+            bail!("database schema version {version} is newer than this ats ({SCHEMA_VERSION})");
+        }
+        let tx = conn.unchecked_transaction()?;
         match version {
             0 => {
-                conn.execute_batch(SCHEMA)?;
-                conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+                tx.execute_batch(SCHEMA)?;
             }
             // Version 1 had no detach flag apart from quiet.
             1 => {
-                conn.execute_batch(
-                    "ALTER TABLE submissions ADD COLUMN detached INTEGER NOT NULL DEFAULT 0;
-                     PRAGMA user_version = 2;",
+                tx.execute_batch(
+                    "ALTER TABLE submissions ADD COLUMN detached INTEGER NOT NULL DEFAULT 0;",
                 )?;
             }
-            SCHEMA_VERSION => {}
-            v => bail!("database schema version {v} is newer than this ats ({SCHEMA_VERSION})"),
+            _ => {}
         }
+        if version < 3 {
+            tx.execute_batch(BACKGROUND_SCHEMA)?;
+        }
+        tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        tx.commit()?;
         Ok(Self { conn })
+    }
+
+    /// Commit the restoration obligation before changing process QoS.
+    pub fn remember_background(&self, pid: i32, start: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO background_processes (pid, start) VALUES (?1, ?2)",
+            params![pid, start],
+        )?;
+        Ok(())
+    }
+
+    pub fn background_processes(&self) -> Result<Vec<(i32, String)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT pid, start FROM background_processes")?;
+        Ok(stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<_, _>>()?)
+    }
+
+    /// Forget only after restoration succeeds or this identity is gone.
+    pub fn forget_background(&self, pid: i32, start: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM background_processes WHERE pid = ?1 AND start = ?2",
+            params![pid, start],
+        )?;
+        Ok(())
     }
 
     /// Registers a submission with a new queued job, its locks and its
@@ -870,5 +908,28 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn upgrades_version_2_and_persists_background_obligations() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ats.db");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.pragma_update(None, "user_version", 2).unwrap();
+        drop(conn);
+        let store = Store::open(&path).unwrap();
+        store.remember_background(10, "start").unwrap();
+        store.remember_background(10, "start").unwrap();
+        drop(store);
+        let store = Store::open(&path).unwrap();
+        assert_eq!(
+            store.background_processes().unwrap(),
+            [(10, "start".into())]
+        );
+        store.forget_background(10, "other").unwrap();
+        assert_eq!(store.background_processes().unwrap().len(), 1);
+        store.forget_background(10, "start").unwrap();
+        assert!(store.background_processes().unwrap().is_empty());
     }
 }

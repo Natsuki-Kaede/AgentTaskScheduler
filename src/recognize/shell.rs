@@ -65,7 +65,11 @@ pub enum Ast {
     Pipeline(Vec<Ast>),
     List(Vec<(Ast, Sep)>),
     /// `( ... )` or `{ ...; }`, with redirections applying to the whole.
-    Group(Box<Ast>, Vec<Redirect>),
+    Group {
+        inner: Box<Ast>,
+        redirects: Vec<Redirect>,
+        subshell: bool,
+    },
 }
 
 /// Why a line could not be analyzed.
@@ -258,14 +262,22 @@ impl Parser {
             let inner = self.list(Some(End::Paren))?;
             self.i += 1;
             let redirects = self.trailing_redirects()?;
-            return Ok(Ast::Group(Box::new(inner), redirects));
+            return Ok(Ast::Group {
+                inner: Box::new(inner),
+                redirects,
+                subshell: true,
+            });
         }
         if self.peek() == Some('{') && self.peek_at(1).is_some_and(|c| " \t\n".contains(c)) {
             self.i += 1;
             let inner = self.list(Some(End::Brace))?;
             self.i += 1;
             let redirects = self.trailing_redirects()?;
-            return Ok(Ast::Group(Box::new(inner), redirects));
+            return Ok(Ast::Group {
+                inner: Box::new(inner),
+                redirects,
+                subshell: false,
+            });
         }
         let mut cmd = Simple::default();
         loop {
@@ -653,7 +665,7 @@ mod tests {
         assert_eq!(s.assigns[2].0, "V");
         assert_eq!(s.substitutions.len(), 1);
         assert_eq!(words(&items[0].0), ["cargo", "test"]);
-        assert!(matches!(&items[1].0, Ast::Group(_, r) if r.len() == 1));
+        assert!(matches!(&items[1].0, Ast::Group { redirects, .. } if redirects.len() == 1));
         assert!(parse("{ make; make test; } 2>&1").is_ok());
     }
 

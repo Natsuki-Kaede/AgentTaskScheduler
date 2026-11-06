@@ -43,7 +43,7 @@ pub async fn run(paths: Paths, shutdown: impl Future<Output = ()> + Send + 'stat
     let config = crate::config::Config::load(&paths)?;
     let state = AppState::new(store, store::now(), instance)
         .with_recognition(profiles, config.recognize.wrappers);
-    let procs = supervisor::System;
+    let procs = supervisor::System::default();
     let reconnecting = supervisor::live_executors(&state, &procs)?;
     tracing::info!(
         count = reconnecting.len(),
@@ -166,7 +166,9 @@ fn sample_loop(state: &AppState) {
             }
         }
         ticks += 1;
-        response.update(state, &snapshot);
+        if let Err(e) = response.update(state, &snapshot) {
+            tracing::error!("updating pressure response: {e:#}");
+        }
         *state.measurements.lock().expect("measurements lock") = snapshot;
         std::thread::sleep(SAMPLE_EVERY);
     }

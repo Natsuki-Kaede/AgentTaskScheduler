@@ -154,13 +154,16 @@ impl Run<'_, '_> {
             Ast::Pipeline(stages) => Ok(Node::Par {
                 items: stages
                     .iter()
-                    .map(|s| self.ast(s, inherited))
+                    .map(|s| self.scoped(|run| run.ast(s, inherited)))
                     .collect::<Result<_, _>>()?,
             }),
             Ast::List(items) => {
                 let mut nodes = Vec::new();
                 for (item, sep) in items {
-                    let node = self.ast(item, inherited)?;
+                    let node = match sep {
+                        Sep::Then => self.ast(item, inherited)?,
+                        Sep::Background => self.scoped(|run| run.ast(item, inherited))?,
+                    };
                     nodes.push(match sep {
                         Sep::Then => node,
                         Sep::Background => Node::Background {
@@ -170,12 +173,17 @@ impl Run<'_, '_> {
                 }
                 Ok(seq(nodes))
             }
-            Ast::Group(inner, redirects) => {
+            Ast::Group {
+                inner,
+                redirects,
+                subshell,
+            } => {
                 let all: Vec<Redirect> = inherited.iter().chain(redirects).cloned().collect();
-                let saved = self.cwd.clone();
-                let node = self.ast(inner, &all);
-                self.cwd = saved;
-                node
+                if *subshell {
+                    self.scoped(|run| run.ast(inner, &all))
+                } else {
+                    self.ast(inner, &all)
+                }
             }
         }
     }
@@ -183,14 +191,14 @@ impl Run<'_, '_> {
     fn simple(&mut self, s: &Simple, inherited: &[Redirect]) -> Res {
         let mut before = Vec::new();
         for sub in &s.substitutions {
-            before.push(self.ast(sub, &[])?);
+            before.push(self.scoped(|run| run.ast(sub, &[]))?);
         }
         let redirects: Vec<Redirect> = inherited.iter().chain(&s.redirects).cloned().collect();
         let mut main = self.command(s.words.clone(), &redirects)?;
         if !s.processes.is_empty() {
             let mut items = vec![main];
             for p in &s.processes {
-                items.push(self.ast(p, &[])?);
+                items.push(self.scoped(|run| run.ast(p, &[]))?);
             }
             main = Node::Par { items };
         }
@@ -281,9 +289,9 @@ impl Run<'_, '_> {
             break;
         }
         match source {
-            Some(src) if !src.dynamic => {
-                self.nested(|run| shell::parse(&src.text).and_then(|ast| run.ast(&ast, redirects)))
-            }
+            Some(src) if !src.dynamic => self.scoped(|run| {
+                run.nested(|run| shell::parse(&src.text).and_then(|ast| run.ast(&ast, redirects)))
+            }),
             _ => Ok(self.unknown(words, redirects)),
         }
     }
@@ -296,6 +304,13 @@ impl Run<'_, '_> {
         let node = f(self);
         self.depth -= 1;
         node
+    }
+
+    fn scoped(&mut self, f: impl FnOnce(&mut Self) -> Res) -> Res {
+        let cwd = self.cwd.clone();
+        let result = f(self);
+        self.cwd = cwd;
+        result
     }
 
     /// `npm run x`, `npm test`, `pnpm run x`, `yarn run x`, `bun run x`:
@@ -317,7 +332,7 @@ impl Run<'_, '_> {
             ("npm" | "pnpm", ["start", ..]) => "start",
             _ => return Ok(None),
         };
-        let Some(scripts) = find_scripts(&self.cwd) else {
+        let Some((root, scripts)) = find_scripts(&self.cwd) else {
             return Ok(Some(self.push(argv.to_vec(), redirects)));
         };
         let Some(body) = scripts.get(name).and_then(|v| v.as_str()) else {
@@ -337,9 +352,10 @@ impl Run<'_, '_> {
         }
         let mut nodes = Vec::new();
         for part in parts {
-            nodes.push(
-                self.nested(|run| shell::parse(&part).and_then(|ast| run.ast(&ast, redirects)))?,
-            );
+            nodes.push(self.scoped(|run| {
+                run.cwd = root.clone();
+                run.nested(|run| shell::parse(&part).and_then(|ast| run.ast(&ast, redirects)))
+            })?);
         }
         Ok(Some(seq(nodes)))
     }
@@ -491,14 +507,17 @@ fn skip_flags(args: &[Word], value_flags: &[&str]) -> Option<Vec<Word>> {
 }
 
 /// The `scripts` of the nearest package.json at or above `dir`.
-fn find_scripts(dir: &Path) -> Option<serde_json::Map<String, serde_json::Value>> {
+fn find_scripts(dir: &Path) -> Option<(PathBuf, serde_json::Map<String, serde_json::Value>)> {
     let file = dir
         .ancestors()
         .map(|d| d.join("package.json"))
         .find(|p| p.is_file())?;
     let json: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(file).ok()?).ok()?;
-    json.get("scripts")?.as_object().cloned()
+        serde_json::from_str(&std::fs::read_to_string(&file).ok()?).ok()?;
+    Some((
+        file.parent()?.to_path_buf(),
+        json.get("scripts")?.as_object()?.clone(),
+    ))
 }
 
 #[cfg(test)]

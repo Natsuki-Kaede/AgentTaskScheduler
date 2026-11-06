@@ -116,23 +116,12 @@ struct Need {
     seconds: Option<f64>,
 }
 
-impl Need {
-    /// Running at the same time: memory adds up, the longest decides the
-    /// time.
-    fn add(self, o: Need) -> Need {
-        Need {
-            mem: self.mem + o.mem,
-            seconds: self.seconds.zip(o.seconds).map(|(a, b)| a.max(b)),
-        }
-    }
-
-    /// The larger memory; time is handled by the caller.
-    fn max(self, o: Need) -> Need {
-        Need {
-            mem: self.mem.max(o.mem),
-            seconds: self.seconds,
-        }
-    }
+struct Flow {
+    need: Need,
+    /// Work that can still overlap the next node, even across nested lists.
+    background: u64,
+    /// When the foreground proceeds, separately from background completion.
+    foreground_seconds: Option<f64>,
 }
 
 fn segment(
@@ -168,47 +157,72 @@ fn segment(
     }
 }
 
-fn combine(node: &Node, needs: &[Need]) -> Need {
+fn combine(node: &Node, needs: &[Need]) -> Flow {
     match node {
-        Node::Cmd { segment } => needs[*segment],
-        Node::Par { items } => items
-            .iter()
-            .map(|i| combine(i, needs))
-            .reduce(Need::add)
-            .unwrap_or_default(),
+        Node::Cmd { segment } => Flow {
+            need: needs[*segment],
+            background: 0,
+            foreground_seconds: needs[*segment].seconds,
+        },
+        Node::Par { items } => {
+            let mut flow = Flow {
+                need: Need {
+                    mem: 0,
+                    seconds: Some(0.0),
+                },
+                background: 0,
+                foreground_seconds: Some(0.0),
+            };
+            for item in items {
+                let child = combine(item, needs);
+                flow.need.mem += child.need.mem;
+                flow.need.seconds = flow
+                    .need
+                    .seconds
+                    .zip(child.need.seconds)
+                    .map(|(a, b)| a.max(b));
+                flow.background += child.background;
+                flow.foreground_seconds = flow
+                    .foreground_seconds
+                    .zip(child.foreground_seconds)
+                    .map(|(a, b)| a.max(b));
+            }
+            flow
+        }
         Node::Seq { items } => {
             // A background stage keeps running until the end of the line:
             // its resources add to everything after it, and it ends its own
             // time after it starts. Foreground stages add their times.
-            let mut background = Need {
-                seconds: Some(0.0),
-                ..Need::default()
-            };
-            let mut peak = Need::default();
+            let mut background = 0;
+            let mut peak = 0;
             let mut elapsed = Some(0.0f64);
             let mut end = Some(0.0f64);
             for i in items {
-                match i {
-                    Node::Background { item } => {
-                        let n = combine(item, needs);
-                        end = end
-                            .zip(elapsed.zip(n.seconds))
-                            .map(|(e, (at, d))| e.max(at + d));
-                        background = background.add(n);
-                        peak = peak.max(background);
-                    }
-                    other => {
-                        let n = combine(other, needs);
-                        elapsed = elapsed.zip(n.seconds).map(|(a, d)| a + d);
-                        end = end.zip(elapsed).map(|(e, a)| e.max(a));
-                        peak = peak.max(background.add(n));
-                    }
-                }
+                let child = combine(i, needs);
+                peak = peak.max(background + child.need.mem);
+                end = end
+                    .zip(elapsed.zip(child.need.seconds))
+                    .map(|(e, (at, d))| e.max(at + d));
+                elapsed = elapsed.zip(child.foreground_seconds).map(|(a, d)| a + d);
+                background += child.background;
             }
-            peak.seconds = end;
-            peak
+            Flow {
+                need: Need {
+                    mem: peak,
+                    seconds: end,
+                },
+                background,
+                foreground_seconds: elapsed,
+            }
         }
-        Node::Background { item } => combine(item, needs),
+        Node::Background { item } => {
+            let child = combine(item, needs);
+            Flow {
+                need: child.need,
+                background: child.need.mem,
+                foreground_seconds: Some(0.0),
+            }
+        }
     }
 }
 
@@ -225,7 +239,7 @@ pub fn predict(
         .map(|s| segment(s, profiles, defaults, history))
         .collect();
     let mut need = match &analysis.structure {
-        Some(node) => combine(node, &needs),
+        Some(node) => combine(node, &needs).need,
         None => Need {
             mem: defaults.conservative,
             seconds: None,
@@ -306,6 +320,23 @@ mod tests {
     #[test]
     fn profile_memory_includes_gpu() {
         assert_eq!(predict_line("mlx_lm.generate --model m", "").mem, 7 * G);
+    }
+
+    #[test]
+    fn nested_lists_keep_background_work_in_the_outer_peak() {
+        for source in [
+            "(make & echo ready); cargo test",
+            "{ make & echo ready; }; cargo test",
+            "sh -c 'make & echo ready'; cargo test",
+        ] {
+            assert_eq!(predict_line(source, "").mem, 6 * G, "{source}");
+        }
+        let p = with_history("(cargo test & make); make", "", |l| match l {
+            Lookup::GlobalKey("make") => stats(None, 10.0),
+            Lookup::GlobalKey("cargo test") => stats(None, 30.0),
+            _ => Stats::default(),
+        });
+        assert_eq!((p.mem, p.seconds), (6 * G, Some(30.0)));
     }
 
     #[test]

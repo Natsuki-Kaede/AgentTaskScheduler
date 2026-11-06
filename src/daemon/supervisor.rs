@@ -17,25 +17,52 @@ use crate::timing;
 /// Process checks, replaceable in tests.
 pub trait Processes {
     fn alive(&self, pid: i64, start: &str) -> bool;
-    fn group_alive(&self, pgid: i64) -> bool;
+    fn job_alive(&self, job: &ActiveJob) -> bool;
+    fn observe(&self, _jobs: &[ActiveJob]) {}
     /// Asks the job's process group to end, or kills it when `force`.
     fn terminate(&self, job: &ActiveJob, force: bool);
 }
 
-pub struct System;
+#[derive(Default)]
+pub struct System {
+    families: std::sync::Mutex<HashMap<String, procinfo::Family>>,
+}
 
 impl Processes for System {
     fn alive(&self, pid: i64, start: &str) -> bool {
         procinfo::alive(pid as i32, start)
     }
 
-    fn group_alive(&self, pgid: i64) -> bool {
-        procinfo::group_alive(pgid as i32)
+    fn job_alive(&self, job: &ActiveJob) -> bool {
+        self.families
+            .lock()
+            .expect("process families lock")
+            .get(&job.id)
+            .is_some_and(|f| !f.is_empty())
+    }
+
+    fn observe(&self, jobs: &[ActiveJob]) {
+        let processes = procinfo::list();
+        let mut families = self.families.lock().expect("process families lock");
+        families.retain(|id, _| jobs.iter().any(|j| &j.id == id));
+        for job in jobs {
+            if let Some(pgid) = job.pgid {
+                families
+                    .entry(job.id.clone())
+                    .or_default()
+                    .observe(pgid as i32, &processes);
+            }
+        }
     }
 
     fn terminate(&self, job: &ActiveJob, force: bool) {
-        if let Some(g) = job.pgid {
-            procinfo::signal_group(g as i32, if force { libc::SIGKILL } else { libc::SIGTERM });
+        if let Some(family) = self
+            .families
+            .lock()
+            .expect("process families lock")
+            .get(&job.id)
+        {
+            family.signal(if force { libc::SIGKILL } else { libc::SIGTERM });
         }
     }
 }
@@ -68,7 +95,7 @@ pub fn check(job: &ActiveJob, procs: &impl Processes) -> Option<Action> {
             job.executor.is_some() || (job.launcher.is_some() && !alive(&job.launcher, procs));
         return starter_gone.then_some(Action::Finish("start_failed", None));
     }
-    if job.pgid.is_some_and(|g| procs.group_alive(g)) {
+    if procs.job_alive(job) {
         return Some(if job.state != "awaiting_takeover" {
             Action::AwaitTakeover
         } else if job.canceled {
@@ -107,6 +134,7 @@ pub fn sweep(
     terminating: &mut HashMap<String, Duration>,
 ) -> Result<()> {
     let jobs = state.store().active_jobs()?;
+    procs.observe(&jobs);
     terminating.retain(|id, _| jobs.iter().any(|j| &j.id == id));
     let mut changed = false;
     for job in jobs {
@@ -162,8 +190,8 @@ mod tests {
         fn alive(&self, pid: i64, _: &str) -> bool {
             self.alive.contains(&pid)
         }
-        fn group_alive(&self, pgid: i64) -> bool {
-            self.groups.contains(&pgid)
+        fn job_alive(&self, job: &ActiveJob) -> bool {
+            job.pgid.is_some_and(|g| self.groups.contains(&g))
         }
         fn terminate(&self, _: &ActiveJob, _: bool) {}
     }
