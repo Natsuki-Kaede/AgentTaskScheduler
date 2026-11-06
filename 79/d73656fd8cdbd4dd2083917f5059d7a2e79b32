@@ -1,0 +1,74 @@
+api/openapi.yaml
+  s_cc8e1cb16de542::t_3b0e65fb57f26b 4
+src/store/mod.rs
+  s_cc8e1cb16de542::t_84c9804a96dadf 20-25,217-220,223,227-228,231,233-237,241-255
+  s_cc8e1cb16de542::t_8ad1f823511e9d 256,912-924
+  s_cc8e1cb16de542::t_af468a1e03cb68 257-267,925-934
+src/sample/macos.rs
+  s_cc8e1cb16de542::t_fa934b95b72815 30,148
+  s_cc8e1cb16de542::t_7bb065968d64d9 149-151
+src/recognize/shell.rs
+  s_cc8e1cb16de542::t_1f3f2db123b3b6 68-72,265
+  s_cc8e1cb16de542::t_92aa4f2680449b 266-269,276-280,668
+src/sched/locks.rs
+  s_cc8e1cb16de542::t_fa934b95b72815 66,70,73-77,80,201-212
+  s_cc8e1cb16de542::t_67a33bbd5173ab 213
+Cargo.toml
+  s_cc8e1cb16de542::t_3b0e65fb57f26b 3
+  s_cc8e1cb16de542::t_fa934b95b72815 29
+src/recognize/mod.rs
+  s_cc8e1cb16de542::t_1f3f2db123b3b6 157,163-166,176-180,182
+  s_cc8e1cb16de542::t_7eabf9b607dbd5 183-186,194,201,292-294,309-315,335,355-358,510,516-520
+src/executor/mod.rs
+  s_cc8e1cb16de542::t_34f4b961863768 341-345,561-576,584-586,590-595,603,607-609,614-617
+  s_cc8e1cb16de542::t_cfb670eab4822b 577-583,587-589,596-602,604-606,610-613,618-621
+  s_cc8e1cb16de542::t_5e2633352c9347 231-233,236-241,244,266-275,285-287,289,291,334,336-340,622
+  s_cc8e1cb16de542::t_62427d3e770d42 623
+src/sched/predict.rs
+  s_cc8e1cb16de542::t_d7e274dcfd868c 119-124,160,162-191,196-197,201-206,208-210
+  s_cc8e1cb16de542::t_72879eeddc9aa5 207,211-223,242,325-341
+src/redact.rs
+  s_cc8e1cb16de542::t_fa934b95b72815 31-34,55-69,154-173,175
+  s_cc8e1cb16de542::t_5e93ebb5f5735a 174,176-179
+src/daemon/supervisor.rs
+  s_cc8e1cb16de542::t_5e2633352c9347 20-21,26-29,36-54,64
+  s_cc8e1cb16de542::t_1cbdf975f54d14 55,59-63,65,98,137,193-194
+src/daemon/mod.rs
+  s_cc8e1cb16de542::t_84c9804a96dadf 169-171
+  s_cc8e1cb16de542::t_5e2633352c9347 46
+src/daemon/pressure.rs
+  s_cc8e1cb16de542::t_8ad1f823511e9d 91,93-169,171-172
+  s_cc8e1cb16de542::t_84c9804a96dadf 18-39,48,50,76-90
+  s_cc8e1cb16de542::t_b401c9c3ca29a2 7,15,92,170,173-218
+src/install/mod.rs
+  s_cc8e1cb16de542::t_7a5ca17be367e4 337-339,346-347,357-366,434,436-439,600-608,614-617,623-625,627,631-632,642-647,661-662,677,683-684,699-706,711,716,721-723
+  s_cc8e1cb16de542::t_fa934b95b72815 430-433,435
+  s_cc8e1cb16de542::t_f60d61e8abfd64 609-613
+  s_cc8e1cb16de542::t_9747486a8ee686 348-356,618-622,648-660,663-676,678-682,685-698,707-710,712-715,717-720
+  s_cc8e1cb16de542::t_a6d6f9243c13c1 724
+src/procinfo.rs
+  s_cc8e1cb16de542::t_5e2633352c9347 18
+  s_cc8e1cb16de542::t_c35e58b21d98a4 24-68,98-100,143-146,174-182
+  s_cc8e1cb16de542::t_4c33e287e7cc51 183-191
+src/recognize/tests.rs
+  s_cc8e1cb16de542::t_75e30087d41c11 7-35
+  s_cc8e1cb16de542::t_26ebeea91a919f 36-56
+Cargo.lock
+  s_cc8e1cb16de542::t_69418c8f9d223a 7
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "79d73656fd8cdbd4dd2083917f5059d7a2e79b32",
+  "prompts": {},
+  "sessions": {
+    "s_cc8e1cb16de542": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a185a3-e440-7aa1-bee6-6efb1914131c",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Natsuki-Kaede <i@pari.network>"
+    }
+  }
+}
