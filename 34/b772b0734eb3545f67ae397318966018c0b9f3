@@ -1,0 +1,27 @@
+INSTALL.md
+  s_f20884f6e2b014::t_099a337a11032f 34,40
+README.zh-CN.md
+  s_f20884f6e2b014::t_099a337a11032f 21,33
+Cargo.toml
+  s_f20884f6e2b014::t_099a337a11032f 7
+README.md
+  s_f20884f6e2b014::t_099a337a11032f 21,33
+packaging/homebrew/ats.rb
+  s_f20884f6e2b014::t_099a337a11032f 5,10,14,21,25
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "34b772b0734eb3545f67ae397318966018c0b9f3",
+  "prompts": {},
+  "sessions": {
+    "s_f20884f6e2b014": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1b4fc-f1ed-7b41-a28b-f8041634b9d7",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Natsuki-Kaede <i@pari.network>"
+    }
+  }
+}
