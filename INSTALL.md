@@ -31,13 +31,13 @@ If `brew` is not available, download the binary. Replace `<target>` with the tar
 
 ```sh
 mkdir -p ~/.local/bin
-curl -fsSL https://github.com/Natsuki-Kaede/agent-task-scheduler/releases/latest/download/ats-<target>.tar.gz | tar -xz -C ~/.local/bin --strip-components 1 ats-<target>/ats
+curl -fsSL https://github.com/Natsuki-Kaede/AgentTaskScheduler/releases/latest/download/ats-<target>.tar.gz | tar -xz -C ~/.local/bin --strip-components 1 ats-<target>/ats
 ```
 
 If the download fails and `cargo` is available, run this command:
 
 ```sh
-cargo install --locked --git https://github.com/Natsuki-Kaede/agent-task-scheduler
+cargo install --locked --git https://github.com/Natsuki-Kaede/AgentTaskScheduler
 ```
 
 Run `ats --version`. If the shell does not find `ats`, tell the user to add the install directory to `PATH`: `$(brew --prefix)/bin`, `~/.local/bin` or `~/.cargo/bin`.

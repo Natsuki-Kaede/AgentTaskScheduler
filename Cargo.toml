@@ -4,7 +4,7 @@ version = "0.1.2"
 edition = "2024"
 description = "Local scheduler that queues resource-heavy commands from AI agents and admits them by machine capacity"
 license = "GPL-3.0-only"
-repository = "https://github.com/Natsuki-Kaede/agent-task-scheduler"
+repository = "https://github.com/Natsuki-Kaede/AgentTaskScheduler"
 
 [[bin]]
 name = "ats"

@@ -18,7 +18,7 @@ Several AI agent sessions on one computer can build, test and run models at the 
 Give this prompt to your AI coding agent, for example Claude Code, Codex, OpenCode or Gemini CLI:
 
 ```text
-Install Agent Task Scheduler (ats) for me. Read https://raw.githubusercontent.com/Natsuki-Kaede/agent-task-scheduler/main/INSTALL.md and do the steps. Ask me before you change files outside this project.
+Install Agent Task Scheduler (ats) for me. Read https://raw.githubusercontent.com/Natsuki-Kaede/AgentTaskScheduler/main/INSTALL.md and do the steps. Ask me before you change files outside this project.
 ```
 
 The agent installs the binary and shows you the changes. It writes them when you agree.
@@ -30,7 +30,7 @@ brew install natsuki-kaede/tap/ats
 ats install
 ```
 
-Homebrew works on macOS and Linux. Without Homebrew, download the archive for your machine from the [releases](https://github.com/Natsuki-Kaede/agent-task-scheduler/releases), or install a Rust toolchain and use `cargo install --locked --git https://github.com/Natsuki-Kaede/agent-task-scheduler`.
+Homebrew works on macOS and Linux. Without Homebrew, download the archive for your machine from the [releases](https://github.com/Natsuki-Kaede/AgentTaskScheduler/releases), or install a Rust toolchain and use `cargo install --locked --git https://github.com/Natsuki-Kaede/AgentTaskScheduler`.
 
 `ats install` shows each change as a diff. It writes nothing before you agree:
 

@@ -18,7 +18,7 @@
 把这句提示词交给你的 AI 编程 agent，例如 Claude Code、Codex、OpenCode 或 Gemini CLI：
 
 ```text
-帮我安装 Agent Task Scheduler（ats）。阅读 https://raw.githubusercontent.com/Natsuki-Kaede/agent-task-scheduler/main/INSTALL.md 并按步骤操作。修改本项目以外的文件前先问我。
+帮我安装 Agent Task Scheduler（ats）。阅读 https://raw.githubusercontent.com/Natsuki-Kaede/AgentTaskScheduler/main/INSTALL.md 并按步骤操作。修改本项目以外的文件前先问我。
 ```
 
 agent 会安装二进制文件，并把要做的改动展示给你，你同意后才写入。
@@ -30,7 +30,7 @@ brew install natsuki-kaede/tap/ats
 ats install
 ```
 
-Homebrew 在 macOS 和 Linux 上都能用。没有 Homebrew 时，从 [Releases](https://github.com/Natsuki-Kaede/agent-task-scheduler/releases) 下载对应机器的压缩包；或者装好 Rust 工具链，运行 `cargo install --locked --git https://github.com/Natsuki-Kaede/agent-task-scheduler`。
+Homebrew 在 macOS 和 Linux 上都能用。没有 Homebrew 时，从 [Releases](https://github.com/Natsuki-Kaede/AgentTaskScheduler/releases) 下载对应机器的压缩包；或者装好 Rust 工具链，运行 `cargo install --locked --git https://github.com/Natsuki-Kaede/AgentTaskScheduler`。
 
 `ats install` 把每处改动以 diff 展示，你同意前不写入任何文件：
 
