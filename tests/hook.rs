@@ -11,6 +11,7 @@ fn ats(home: &std::path::Path, args: &[&str], stdin: &str, env: &[(&str, &str)])
         .env_remove("ATS_JOB_ID")
         .env_remove("CODEX_SESSION_ID")
         .env_remove("CLAUDE_CODE_SESSION_ID")
+        .env_remove("DSH_SESSION_ID")
         .envs(env.iter().copied())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -64,10 +65,16 @@ fn wait_until(what: &str, mut ok: impl FnMut() -> bool) {
 
 #[test]
 fn reminds_the_session_of_its_submissions() {
+    for agent in ["claude", "codex", "dsh"] {
+        reminds_agent(agent);
+    }
+}
+
+fn reminds_agent(agent: &str) {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
     let hook = |event: &str, input: serde_json::Value| -> serde_json::Value {
-        let out = ats(&home, &["hook", "claude", event], &input.to_string(), &[]);
+        let out = ats(&home, &["hook", agent, event], &input.to_string(), &[]);
         assert!(
             out.status.success(),
             "{}",
@@ -108,7 +115,17 @@ fn reminds_the_session_of_its_submissions() {
     let run = |args: &[&str]| {
         let mut all = vec!["run"];
         all.extend_from_slice(args);
-        ats(&home, &all, "", &[("CLAUDE_CODE_SESSION_ID", "s1")])
+        let variable = match agent {
+            "dsh" => "DSH_SESSION_ID",
+            "codex" => "CODEX_SESSION_ID",
+            _ => "CLAUDE_CODE_SESSION_ID",
+        };
+        // DSH's per-execution session overrides an inherited outer Codex ID.
+        let mut env = vec![(variable, "s1")];
+        if agent == "dsh" {
+            env.push(("CODEX_SESSION_ID", "outer-session"));
+        }
+        ats(&home, &all, "", &env)
     };
     // A result the agent already got is not mentioned; one left running is.
     assert!(run(&["--sh", "perl -e 1; echo done"]).status.success());

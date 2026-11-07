@@ -129,14 +129,17 @@ enum Command {
     /// Leave a submission running in the background: the agent may stop
     /// without waiting for it, and still hears when it ends.
     Detach { submission: String },
-    /// Add ats's hooks and instructions to Claude Code and Codex and start
+    /// Add ats's hooks and instructions to Claude Code, Codex or DSH and start
     /// the daemon at login, after showing the changes and asking.
     Install {
         /// Only this agent; by default every agent set up on this machine.
         #[arg(long, conflicts_with = "service")]
         agent: Vec<hook::Agent>,
-        /// Only start the daemon at login, for agents other than Claude
-        /// Code and Codex; add `ats instructions` to their instructions.
+        /// DSH profile to configure (under DSH_HOME/profiles).
+        #[arg(long, default_value = "desktop")]
+        dsh_profile: String,
+        /// Only start the daemon at login; add `ats instructions` to the
+        /// agent's instructions yourself.
         #[arg(long)]
         service: bool,
         #[command(flatten)]
@@ -147,6 +150,9 @@ enum Command {
     Uninstall {
         #[arg(long)]
         agent: Vec<hook::Agent>,
+        /// DSH profile to remove ats from.
+        #[arg(long, default_value = "desktop")]
+        dsh_profile: String,
         #[command(flatten)]
         confirm: ConfirmArgs,
     },
@@ -265,24 +271,27 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
         }
         Command::Install {
             agent,
+            dsh_profile,
             service,
             confirm,
         } => {
             let home = dirs::home_dir().context("no home directory")?;
+            let dsh = install::DshConfig::from_env(&home, &dsh_profile);
             let agents = if service {
                 Vec::new()
             } else {
-                install::agents(&home, &agent)
+                install::agents(&home, &agent, &dsh)
             };
             if agents.is_empty() && !service {
                 anyhow::bail!(
-                    "found neither ~/.claude nor ~/.codex; name an agent with --agent, or use --service"
+                    "found no Claude Code, Codex or DSH profile; name an agent with --agent, or use --service"
                 );
             }
             let ats = std::env::current_exe().context("locating the ats binary")?;
             install::install(
                 &paths,
                 &home,
+                &dsh,
                 &agents,
                 &ats,
                 true,
@@ -295,12 +304,18 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
             print!("{}", install::instructions_block());
             Ok(ExitCode::SUCCESS)
         }
-        Command::Uninstall { agent, confirm } => {
+        Command::Uninstall {
+            agent,
+            dsh_profile,
+            confirm,
+        } => {
             let home = dirs::home_dir().context("no home directory")?;
-            let agents = install::agents(&home, &agent);
+            let dsh = install::DshConfig::from_env(&home, &dsh_profile);
+            let agents = install::agents(&home, &agent, &dsh);
             install::uninstall(
                 &paths,
                 &home,
+                &dsh,
                 &agents,
                 agent.is_empty(),
                 true,
@@ -351,14 +366,17 @@ fn runs_directly(paths: &paths::Paths, spec: &runspec::RunSpec) -> Result<bool> 
 }
 
 /// The agent session the command comes from, as the agent sets it in the
-/// environment of its shell commands (design 6.2). An agent started from
-/// another agent's command also inherits the outer agent's variable;
-/// Codex is checked first, which is right for Codex started from Claude
-/// Code.
+/// environment of its shell commands (design 6.2). DSH rebuilds its managed
+/// environment for each shell execution, so its session takes precedence
+/// over inherited variables from an outer agent.
 fn agent_session() -> Option<String> {
-    ["CODEX_SESSION_ID", "CLAUDE_CODE_SESSION_ID"]
-        .iter()
-        .find_map(|v| std::env::var(v).ok().filter(|s| !s.is_empty()))
+    [
+        "DSH_SESSION_ID",
+        "CODEX_SESSION_ID",
+        "CLAUDE_CODE_SESSION_ID",
+    ]
+    .iter()
+    .find_map(|v| std::env::var(v).ok().filter(|s| !s.is_empty()))
 }
 
 fn print_jobs(jobs: &serde_json::Value) {

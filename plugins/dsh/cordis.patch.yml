@@ -1,0 +1,3 @@
+- insert:
+    - id: agent-task-scheduler
+      name: '@local/agent-task-scheduler'

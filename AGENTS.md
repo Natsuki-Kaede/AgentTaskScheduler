@@ -10,6 +10,7 @@ Agent Task Scheduler (`ats`) queues resource-heavy commands from AI agents and a
 - `src/client.rs`: how commands reach the daemon.
 - `src/executor/`: the per-job process that waits for its lease and runs the command.
 - `src/hook.rs`: the agent hooks, which remind agents of their submissions.
+- `plugins/dsh/`: the dependency-free DSH reminder bundle, embedded in the binary by `src/install/dsh.rs`, plus its Node tests.
 - `src/install/`: `ats install` and `ats uninstall` for the agents' instructions, reminder hooks and the login service (`service.rs`: LaunchAgent or systemd user unit).
 - `src/recognize/`, `src/profile.rs`, `profiles/builtin.toml`: command recognition and tool profiles.
 - `src/sched/`: admission, prediction, locks and pressure as pure functions.
@@ -37,4 +38,4 @@ Run before every commit:
 scripts/check.sh
 ```
 
-It runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test`.
+It runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` and the DSH adapter tests (`node --test`). Node.js 22 or newer is required for these checks. The optional installed-DSH runtime test is documented in `plugins/dsh/README.md`.

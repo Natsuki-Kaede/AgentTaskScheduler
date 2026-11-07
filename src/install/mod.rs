@@ -17,6 +17,8 @@ use serde_json::{Value, json};
 use crate::hook::{Agent, quote};
 use crate::paths::Paths;
 
+mod dsh;
+pub use dsh::DshConfig;
 mod service;
 
 /// How install and uninstall confirm their changes.
@@ -90,6 +92,7 @@ fn name(agent: Agent) -> &'static str {
     match agent {
         Agent::Claude => "claude",
         Agent::Codex => "codex",
+        Agent::Dsh => "dsh",
     }
 }
 
@@ -99,6 +102,10 @@ fn files(home: &Path, agent: Agent) -> (PathBuf, PathBuf) {
         Agent::Claude => (
             home.join(".claude/settings.json"),
             home.join(".claude/CLAUDE.md"),
+        ),
+        Agent::Dsh => (
+            home.join(".dsh/profiles/desktop/package.json"),
+            home.join(".dsh/AGENTS.md"),
         ),
         Agent::Codex => (
             home.join(".codex/hooks.json"),
@@ -112,17 +119,21 @@ fn include_file(home: &Path, agent: Agent) -> PathBuf {
     match agent {
         Agent::Claude => home.join(".claude/ats.md"),
         Agent::Codex => home.join(".codex/ATS.md"),
+        Agent::Dsh => home.join(".dsh/ATS.md"),
     }
 }
 
 /// The agents named, or else those set up on this machine.
-pub fn agents(home: &Path, named: &[Agent]) -> Vec<Agent> {
+pub fn agents(home: &Path, named: &[Agent], dsh: &DshConfig<'_>) -> Vec<Agent> {
     if !named.is_empty() {
         return named.to_vec();
     }
-    [Agent::Claude, Agent::Codex]
+    [Agent::Claude, Agent::Codex, Agent::Dsh]
         .into_iter()
-        .filter(|a| files(home, *a).0.parent().is_some_and(Path::is_dir))
+        .filter(|a| match a {
+            Agent::Dsh => dsh.manifest().is_file(),
+            _ => files(home, *a).0.parent().is_some_and(Path::is_dir),
+        })
         .collect()
 }
 
@@ -250,8 +261,7 @@ pub fn instructions_block() -> String {
     format!("{BEGIN}\n{INSTRUCTIONS}\n{END}\n")
 }
 
-fn codex_block(home: &Path) -> String {
-    let reference = include_file(home, Agent::Codex);
+fn compact_block(reference: &Path) -> String {
     format!(
         "{BEGIN}\n\
 Use `ats run -- <program> <args>` or `ats run --sh '<command>'` for resource-heavy or >30s commands. Put `cd` before ats; small or interactive commands and persistent servers bypass ats.\n\
@@ -336,9 +346,11 @@ fn ask(input: &mut dyn BufRead, out: &mut impl Write, question: &str) -> Result<
 
 /// With `start`, ensure the login service is loaded, including on a retry
 /// whose files already match after an earlier service-start failure.
+#[allow(clippy::too_many_arguments)]
 pub fn install<W: Write>(
     paths: &Paths,
     home: &Path,
+    dsh: &DshConfig<'_>,
     agents: &[Agent],
     ats: &Path,
     start: bool,
@@ -348,17 +360,25 @@ pub fn install<W: Write>(
     install_with(
         paths,
         home,
+        dsh,
         agents,
         ats,
-        start.then_some(|changed, out: &mut W| service::load(home, changed, out)),
+        start.then_some(|changed, out: &mut W| {
+            if agents.contains(&Agent::Dsh) {
+                dsh::link(dsh, out)?;
+            }
+            service::load(home, changed, out)
+        }),
         confirm,
         out,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn install_with<W: Write>(
     paths: &Paths,
     home: &Path,
+    dsh: &DshConfig<'_>,
     agents: &[Agent],
     ats: &Path,
     start: Option<impl FnOnce(bool, &mut W) -> Result<()>>,
@@ -369,6 +389,10 @@ fn install_with<W: Write>(
     let mut changes = Vec::new();
     let mut notes = Vec::new();
     for &agent in agents {
+        if agent == Agent::Dsh {
+            changes.extend(dsh::install(home, dsh, ats)?);
+            continue;
+        }
         let (hooks_file, instructions) = files(home, agent);
         let old = read(&hooks_file)?;
         let mut doc = parse(&hooks_file, old.as_deref())?;
@@ -404,7 +428,10 @@ fn install_with<W: Write>(
         });
         let new = match agent {
             Agent::Claude => with_include(old.as_deref().unwrap_or_default()),
-            Agent::Codex => with_block(old.as_deref().unwrap_or_default(), &codex_block(home)),
+            Agent::Codex | Agent::Dsh => with_block(
+                old.as_deref().unwrap_or_default(),
+                &compact_block(&include_file(home, agent)),
+            ),
         };
         changes.push(Change {
             path: instructions,
@@ -443,9 +470,11 @@ fn install_with<W: Write>(
 
 /// With `all`, the login service goes too; with `start`, it is unloaded
 /// first.
+#[allow(clippy::too_many_arguments)]
 pub fn uninstall(
     paths: &Paths,
     home: &Path,
+    dsh: &DshConfig<'_>,
     agents: &[Agent],
     all: bool,
     start: bool,
@@ -455,6 +484,10 @@ pub fn uninstall(
     let mut record = Record::load(paths)?;
     let mut changes = Vec::new();
     for &agent in agents {
+        if agent == Agent::Dsh {
+            changes.extend(dsh::uninstall(home, dsh)?);
+            continue;
+        }
         let (hooks_file, instructions) = files(home, agent);
         if let Some(old) = read(&hooks_file)? {
             let mut doc = parse(&hooks_file, Some(&old))?;
@@ -473,7 +506,7 @@ pub fn uninstall(
         if let Some(old) = read(&instructions)? {
             let new = match agent {
                 Agent::Claude => without_include(&old),
-                Agent::Codex => without_block(&old),
+                Agent::Codex | Agent::Dsh => without_block(&old),
             };
             changes.push(Change {
                 path: instructions,
@@ -503,6 +536,9 @@ pub fn uninstall(
             service::unload(home)?;
         }
         write(paths, &changes, &record, out)?;
+        if start && agents.contains(&Agent::Dsh) {
+            dsh::link(dsh, out)?;
+        }
     }
     Ok(())
 }
@@ -648,6 +684,7 @@ mod tests {
         let result = install_with(
             &paths,
             &home,
+            &DshConfig::new(&home, "desktop"),
             &[Agent::Codex],
             ats,
             Some(|changed: bool, _: &mut Vec<u8>| {
@@ -663,6 +700,7 @@ mod tests {
         install_with(
             &paths,
             &home,
+            &DshConfig::new(&home, "desktop"),
             &[Agent::Codex],
             ats,
             Some(|changed: bool, _: &mut Vec<u8>| {
@@ -689,6 +727,7 @@ mod tests {
             install_with(
                 &paths,
                 &home,
+                &DshConfig::new(&home, "desktop"),
                 &[Agent::Codex],
                 binary,
                 Some(|_, _: &mut Vec<u8>| -> Result<()> { panic!("service should not start") }),
@@ -765,11 +804,22 @@ mod tests {
         std::fs::write(&settings, &original).unwrap();
         std::fs::write(&instructions, "# Mine\n\nKeep this.\n").unwrap();
         let ats = Path::new("/opt/ats");
-        let agents = agents(&home, &[]);
+        let agents = agents(&home, &[], &DshConfig::new(&home, "desktop"));
         assert_eq!(agents, [Agent::Claude], "only the agent set up here");
 
         let shown = run(
-            |i, o| install(&paths, &home, &agents, ats, false, Confirm::Ask(i), o),
+            |i, o| {
+                install(
+                    &paths,
+                    &home,
+                    &DshConfig::new(&home, "desktop"),
+                    &agents,
+                    ats,
+                    false,
+                    Confirm::Ask(i),
+                    o,
+                )
+            },
             "y\n",
         );
         assert!(
@@ -819,14 +869,34 @@ mod tests {
         // Installing again changes nothing.
         assert!(
             run(
-                |i, o| install(&paths, &home, &agents, ats, false, Confirm::Ask(i), o),
+                |i, o| install(
+                    &paths,
+                    &home,
+                    &DshConfig::new(&home, "desktop"),
+                    &agents,
+                    ats,
+                    false,
+                    Confirm::Ask(i),
+                    o
+                ),
                 ""
             )
             .contains("Nothing to change.")
         );
 
         run(
-            |i, o| uninstall(&paths, &home, &agents, true, false, Confirm::Ask(i), o),
+            |i, o| {
+                uninstall(
+                    &paths,
+                    &home,
+                    &DshConfig::new(&home, "desktop"),
+                    &agents,
+                    true,
+                    false,
+                    Confirm::Ask(i),
+                    o,
+                )
+            },
             "y\n",
         );
         assert_eq!(
@@ -872,6 +942,7 @@ mod tests {
                 install(
                     &paths,
                     &home,
+                    &DshConfig::new(&home, "desktop"),
                     &[Agent::Claude],
                     Path::new("/opt/ats"),
                     false,
@@ -908,6 +979,7 @@ mod tests {
                 install(
                     &paths,
                     &home,
+                    &DshConfig::new(&home, "desktop"),
                     &[Agent::Claude],
                     Path::new("/opt/ats"),
                     false,
@@ -938,6 +1010,7 @@ mod tests {
                 install(
                     &paths,
                     &home,
+                    &DshConfig::new(&home, "desktop"),
                     &[Agent::Codex],
                     ats,
                     false,
@@ -968,6 +1041,7 @@ mod tests {
                 uninstall(
                     &paths,
                     &home,
+                    &DshConfig::new(&home, "desktop"),
                     &[Agent::Codex],
                     true,
                     false,
@@ -996,6 +1070,7 @@ mod tests {
         install(
             &paths,
             &home,
+            &DshConfig::new(&home, "desktop"),
             &[Agent::Codex],
             ats,
             false,
@@ -1011,6 +1086,7 @@ mod tests {
         install(
             &paths,
             &home,
+            &DshConfig::new(&home, "desktop"),
             &[Agent::Codex],
             ats,
             false,
@@ -1027,6 +1103,7 @@ mod tests {
         uninstall(
             &paths,
             &home,
+            &DshConfig::new(&home, "desktop"),
             &[Agent::Codex],
             false,
             false,
@@ -1047,6 +1124,7 @@ mod tests {
         let err = install(
             &paths,
             &home,
+            &DshConfig::new(&home, "desktop"),
             &[Agent::Claude],
             Path::new("/opt/ats"),
             false,
@@ -1066,6 +1144,7 @@ mod tests {
         install(
             &paths,
             &home,
+            &DshConfig::new(&home, "desktop"),
             &[Agent::Claude],
             ats,
             false,
@@ -1086,6 +1165,7 @@ mod tests {
         install(
             &paths,
             &home,
+            &DshConfig::new(&home, "desktop"),
             &[Agent::Claude],
             ats,
             false,
@@ -1107,6 +1187,7 @@ mod tests {
         install(
             &paths,
             &home,
+            &DshConfig::new(&home, "desktop"),
             &[],
             Path::new("/opt/ats"),
             false,

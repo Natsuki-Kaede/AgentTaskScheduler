@@ -11,11 +11,11 @@ Several AI agent sessions on one computer can build, test and run models at the 
 - **Less load under pressure.** When the system starts to swap, `ats` starts no new commands. On macOS, it also gives running jobs background priority. It does not pause or stop jobs.
 - **The agent decides.** Instructions tell the model which commands to send to `ats`. Light commands run directly, so they cost nothing more.
 
-`ats` runs on macOS and Linux, on 64-bit Arm and x86. It works with any agent that can run shell commands. The reminder hooks are for Claude Code and Codex.
+`ats` runs on macOS and Linux, on 64-bit Arm and x86. It works with any agent that can run shell commands. Reminders support Claude Code, Codex and DeepSeek Harness (DSH).
 
 ## Install
 
-Give this prompt to your AI coding agent, for example Claude Code, Codex, OpenCode or Gemini CLI:
+Give this prompt to your AI coding agent, for example Claude Code, Codex, DSH, OpenCode or Gemini CLI:
 
 ```text
 Install Agent Task Scheduler (ats) for me. Read https://raw.githubusercontent.com/Natsuki-Kaede/AgentTaskScheduler/main/INSTALL.md and do the steps. Ask me before you change files outside this project.
@@ -36,7 +36,18 @@ Homebrew works on macOS and Linux. Without Homebrew, download the archive for yo
 
 - instructions for the model: `~/.claude/ats.md` with an `@ats.md` line in `~/.claude/CLAUDE.md`; for Codex, full guidance in `~/.codex/ATS.md` and a compact entrypoint in `~/.codex/AGENTS.md` that reads it for queued jobs or errors;
 - two reminder hooks in `~/.claude/settings.json` and `~/.codex/hooks.json`, which tell the agent about commands that still run or that ended;
+- for DSH, a Cordis reminder plugin linked into the selected profile, with full guidance in `~/.dsh/ATS.md` and a compact entrypoint in `~/.dsh/AGENTS.md`;
 - a login service that starts the daemon: a LaunchAgent on macOS, a systemd user unit on Linux.
+
+DSH 0.2.2-rc.1 or newer in the 0.2 series uses its native shell session ID. Configure an initialized profile with:
+
+```sh
+ats install --agent dsh
+# Another initialized profile:
+ats install --agent dsh --dsh-profile headless
+```
+
+The default profile is `desktop`. `DSH_HOME` selects its home directory; `DSH_BIN` selects the DSH launcher when it is not on PATH or in the standard macOS application location. Restart that profile after installation. See [DSH integration](plugins/dsh/README.md) for installation details and the reminder contract. If your installed binary does not offer `--agent dsh`, update from source with `cargo install --locked --git https://github.com/Natsuki-Kaede/AgentTaskScheduler --force`.
 
 For other agents, `ats install --service` adds only the login service. `ats instructions` prints the instructions, which you add to the instructions file of the agent.
 

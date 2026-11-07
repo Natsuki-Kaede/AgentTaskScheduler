@@ -25,6 +25,7 @@ const COMMAND_CHARS: usize = 120;
 pub enum Agent {
     Claude,
     Codex,
+    Dsh,
 }
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]

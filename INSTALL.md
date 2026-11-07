@@ -56,6 +56,20 @@ This adds the instructions for the model, two reminder hooks, and a login servic
 
 For Codex, full guidance goes in `~/.codex/ATS.md`; the managed section in `~/.codex/AGENTS.md` contains only the scheduling trigger and a reference to read for queued jobs or errors. Reinstalling updates these files, and uninstalling removes the managed section and its reference file.
 
+### DeepSeek Harness (DSH)
+
+Requires DSH 0.2.2-rc.1 or newer in the 0.2 series and an initialized profile. If `ats install --help` does not list `dsh`, install ats from current source with `cargo install --locked --git https://github.com/Natsuki-Kaede/AgentTaskScheduler --force`.
+
+1. Run `ats install --agent dsh --dry-run`. The default profile is `desktop`; use `--dsh-profile <name>` for another initialized profile. `DSH_HOME` overrides `~/.dsh`.
+2. Show the diff and get permission if installation has not already been authorized.
+3. Run the same command with `--yes` instead of `--dry-run`.
+
+This adds a compact managed section to `$DSH_HOME/AGENTS.md`, full guidance to `$DSH_HOME/ATS.md`, and a dependency-free reminder bundle in `~/dsh-plugins/agent-task-scheduler/`. It adds a `link:` dependency and bundle entry to the selected profile's `package.json`, runs DSH's package manager with lifecycle scripts disabled, and installs the ats login service. Each changed file is backed up before writing. A custom `DSH_HOME` stores its plugin under `$DSH_HOME/plugins/agent-task-scheduler/` to keep separate homes independent.
+
+The installer finds `dsh` on PATH or in the standard macOS app location. Set `DSH_BIN` to an executable launcher path for another installation. Restart the selected profile to load its new bundle. DSH's native Bash tool supplies `DSH_SESSION_ID`; the plugin delivers reminders within that same session.
+
+To remove the integration, use `ats uninstall --agent dsh --dsh-profile <name>`. Shared plugin files and instructions stay until the last configured profile removes ats. The daemon service stays when `--agent` is specified. See [DSH integration](plugins/dsh/README.md) for verification and interface details.
+
 ### A different agent
 
 1. Run `ats install --service --dry-run`. Show the diff to the user and ask. If the user agrees, run `ats install --service --yes`. This adds the login service.
@@ -74,6 +88,7 @@ Tell the user these items:
 
 - which files changed;
 - that new agent sessions read the instructions, and sessions that run now do not;
+- for DSH: restart the selected profile to load the reminder bundle;
 - that Codex asks to trust the changed hooks when it starts the next time;
 - on Linux: systemd stops the daemon when the user closes the last login session. If the user works over SSH, `loginctl enable-linger` keeps it running;
 - that `ats uninstall` removes the changes of `ats install`. For a different agent, the user also removes the section between the two markers from the instructions file.

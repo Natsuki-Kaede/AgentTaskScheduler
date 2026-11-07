@@ -11,11 +11,11 @@
 - **压力下减负。** 系统开始换页时，`ats` 不再启动新命令；在 macOS 上还会把正在跑的任务降为后台优先级。它不会暂停或终止任务。
 - **由 agent 判断。** 指令告诉模型哪些命令交给 `ats`。轻命令直接运行，没有额外开销。
 
-`ats` 支持 macOS 和 Linux，64 位 Arm 和 x86。任何能运行 shell 命令的 agent 都能用。提醒 hook 适用于 Claude Code 和 Codex。
+`ats` 支持 macOS 和 Linux，64 位 Arm 和 x86。任何能运行 shell 命令的 agent 都能用。任务提醒支持 Claude Code、Codex 和 DeepSeek Harness（DSH）。
 
 ## 安装
 
-把这句提示词交给你的 AI 编程 agent，例如 Claude Code、Codex、OpenCode 或 Gemini CLI：
+把这句提示词交给你的 AI 编程 agent，例如 Claude Code、Codex、DSH、OpenCode 或 Gemini CLI：
 
 ```text
 帮我安装 Agent Task Scheduler（ats）。阅读 https://raw.githubusercontent.com/Natsuki-Kaede/AgentTaskScheduler/main/INSTALL.md 并按步骤操作。修改本项目以外的文件前先问我。
@@ -36,7 +36,18 @@ Homebrew 在 macOS 和 Linux 上都能用。没有 Homebrew 时，从 [Releases]
 
 - 给模型的指令：`~/.claude/ats.md`，加上 `~/.claude/CLAUDE.md` 里的一行 `@ats.md`；Codex 的完整说明写入 `~/.codex/ATS.md`，`~/.codex/AGENTS.md` 只保留简短入口，在任务排队或出错时读取；
 - `~/.claude/settings.json` 和 `~/.codex/hooks.json` 里的两个提醒 hook，告诉 agent 哪些命令还在跑、哪些已经结束；
+- DSH 的 Cordis 提醒插件，链接进选定的 profile；完整说明写入 `~/.dsh/ATS.md`，`~/.dsh/AGENTS.md` 保留简短入口；
 - 启动守护进程的登录服务：macOS 上是 LaunchAgent，Linux 上是 systemd 用户服务。
+
+DSH 适配支持 0.2 系列中的 0.2.2-rc.1 及后续版本，直接使用原生 shell 的会话 ID。为已初始化的 profile 安装：
+
+```sh
+ats install --agent dsh
+# 其他已初始化的 profile：
+ats install --agent dsh --dsh-profile headless
+```
+
+默认 profile 是 `desktop`。`DSH_HOME` 指定 DSH 数据目录；启动器不在 PATH 或 macOS 默认应用位置时，用 `DSH_BIN` 指定。安装后重启对应 profile。[DSH 适配说明](plugins/dsh/README.md) 介绍安装细节和提醒行为。如果当前二进制没有 `--agent dsh` 选项，用 `cargo install --locked --git https://github.com/Natsuki-Kaede/AgentTaskScheduler --force` 从最新源码更新。
 
 其他 agent 用 `ats install --service` 只装登录服务；`ats instructions` 打印指令，你把它加进该 agent 的指令文件。
 
