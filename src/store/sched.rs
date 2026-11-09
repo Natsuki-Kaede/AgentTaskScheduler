@@ -3,13 +3,10 @@
 use anyhow::Result;
 use rusqlite::{OptionalExtension, params};
 
-use super::{Conflict, Store, is_terminal, no_job, now, process};
-use crate::sched::locks::Lock;
+use super::{Conflict, Store, no_job, now, process};
+use crate::domain::resource::Lock;
 
-/// States before a lease: the job has not run.
-pub const PRE_LEASE: &[&str] = &["queued", "blocked", "capacity_insufficient"];
-/// States holding a lease and a reservation.
-pub const HELD: &[&str] = &["admitted", "running", "awaiting_takeover"];
+use crate::domain::job::{HELD, JobEvent, JobState, PRE_LEASE};
 
 pub(super) fn in_list(states: &[&str]) -> String {
     states
@@ -23,25 +20,25 @@ pub(super) fn in_list(states: &[&str]) -> String {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Predecessor {
     pub job: String,
-    pub state: String,
+    pub state: JobState,
     pub exit_code: Option<i64>,
 }
 
 impl Predecessor {
     /// Only completion with exit code 0 satisfies `--after` (design 10.4).
     pub fn succeeded(&self) -> bool {
-        self.state == "completed" && self.exit_code == Some(0)
+        self.state == crate::domain::job::JobState::Completed && self.exit_code == Some(0)
     }
 
     pub fn failed(&self) -> bool {
-        is_terminal(&self.state) && !self.succeeded()
+        self.state.terminal() && !self.succeeded()
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct QueuedJob {
     pub id: String,
-    pub state: String,
+    pub state: JobState,
     pub created_at: String,
     pub predicted_private: u64,
     pub predicted_seconds: Option<f64>,
@@ -60,15 +57,7 @@ pub struct HeldJob {
     pub locks: Vec<Lock>,
 }
 
-/// What an executor is given with its lease (design 10.5).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct LeaseTerms {
-    pub parallelism: Option<u32>,
-    /// Tokens for the jobserver pool, when the line runs jobserver clients.
-    pub jobserver_tokens: Option<u32>,
-    /// Variables to set to `parallelism`.
-    pub env: Vec<String>,
-}
+use crate::domain::resource::LeaseTerms;
 
 fn lock_from(kind: String, resource: String) -> Lock {
     if kind == "path" {
@@ -106,7 +95,7 @@ impl Store {
     pub fn queued_jobs(&self) -> Result<Vec<QueuedJob>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT id, state, created_at, predicted_private, predicted_seconds, run_now, executor_pid, executor_start
-             FROM jobs WHERE state IN ({}) ORDER BY created_at, rowid",
+             FROM jobs WHERE state IN ({}) AND finish_state IS NULL ORDER BY created_at, rowid",
             in_list(PRE_LEASE)
         ))?;
         let rows: Vec<QueuedJob> = stmt
@@ -164,17 +153,20 @@ impl Store {
     /// parallelism: each client runs one job without a token (design 10.5).
     pub fn admit(&mut self, job: &str, reserved: u64, parallelism: u32) -> Result<()> {
         let tx = self.conn.transaction()?;
-        let (state, executor): (String, Option<i64>) = tx
+        let (state, executor, finish): (JobState, Option<i64>, Option<JobState>) = tx
             .query_row(
-                "SELECT state, executor_pid FROM jobs WHERE id = ?1",
+                "SELECT state, executor_pid, finish_state FROM jobs WHERE id = ?1",
                 params![job],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()?
             .ok_or_else(|| no_job(job))?;
-        if !PRE_LEASE.contains(&state.as_str()) || executor.is_none() {
+        if !state.pre_lease() || executor.is_none() || finish.is_some() {
             return Err(Conflict(format!("job {job} is {state} and cannot be admitted")).into());
         }
+        state
+            .transition(JobEvent::Admit)
+            .map_err(|e| Conflict(e.to_string()))?;
         tx.execute(
             "INSERT INTO leases (job_id, granted_at, parallelism, jobserver_tokens)
              SELECT ?1, ?2, ?3, CASE WHEN jobserver THEN ?3 - 1 END FROM jobs WHERE id = ?1",
@@ -190,41 +182,59 @@ impl Store {
     }
 
     pub fn lease_terms(&self, job: &str) -> Result<LeaseTerms> {
-        let row: Option<(Option<u32>, Option<u32>, Option<String>)> = self
+        let (terms, finish) = self
             .conn
             .query_row(
-                "SELECT l.parallelism, l.jobserver_tokens, j.parallel_env FROM jobs j
+                "SELECT l.parallelism, l.jobserver_tokens, j.parallel_env, j.finish_state FROM jobs j
                  LEFT JOIN leases l ON l.job_id = j.id WHERE j.id = ?1",
                 params![job],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| {
+                    Ok((
+                        LeaseTerms {
+                            parallelism: r.get(0)?,
+                            jobserver_tokens: r.get(1)?,
+                            env: r
+                                .get::<_, Option<String>>(2)?
+                                .and_then(|e| serde_json::from_str(&e).ok())
+                                .unwrap_or_default(),
+                        },
+                        r.get::<_, Option<JobState>>(3)?,
+                    ))
+                },
             )
-            .optional()?;
-        let (parallelism, jobserver_tokens, env) = row.ok_or_else(|| no_job(job))?;
-        Ok(LeaseTerms {
-            parallelism,
-            jobserver_tokens,
-            env: env
-                .and_then(|e| serde_json::from_str(&e).ok())
-                .unwrap_or_default(),
-        })
+            .optional()?
+            .ok_or_else(|| no_job(job))?;
+        if finish.is_some() {
+            return Err(
+                Conflict(format!("job {job}: completion has already been reported")).into(),
+            );
+        }
+        Ok(terms)
     }
 
     /// Moves a job between the states before its lease (queued, blocked,
     /// capacity insufficient).
-    pub fn set_queue_state(&mut self, job: &str, state: &str) -> Result<()> {
-        let n = self.conn.execute(
-            &format!(
-                "UPDATE jobs SET state = ?2 WHERE id = ?1 AND state IN ({}) AND state != ?2",
-                in_list(PRE_LEASE)
-            ),
-            params![job, state],
-        )?;
-        if n > 0 {
-            self.conn.execute(
-                "INSERT INTO job_events (job_id, at, kind) VALUES (?1, ?2, ?3)",
-                params![job, now(), state],
-            )?;
+    pub fn set_queue_state(&mut self, job: &str, next: JobState) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        let state: JobState = tx
+            .query_row("SELECT state FROM jobs WHERE id = ?1", params![job], |r| {
+                r.get(0)
+            })
+            .optional()?
+            .ok_or_else(|| no_job(job))?;
+        // A scheduling snapshot may race a cancellation or completion.
+        if !state.pre_lease() || state == next {
+            return Ok(());
         }
+        state
+            .transition(JobEvent::Queue(next))
+            .map_err(|e| Conflict(e.to_string()))?;
+        tx.execute(
+            "UPDATE jobs SET state = ?2 WHERE id = ?1",
+            params![job, next],
+        )?;
+        Self::event(&tx, job, next.as_str(), None)?;
+        tx.commit()?;
         Ok(())
     }
 

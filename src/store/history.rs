@@ -7,7 +7,7 @@ use anyhow::Result;
 use rusqlite::params;
 
 use super::Store;
-use crate::sched::predict::Stats;
+use crate::domain::resource::HistorySample;
 
 /// Enough recent runs for a percentile.
 const LIMIT: i64 = 200;
@@ -27,7 +27,7 @@ impl Store {
         project: Option<&str>,
         command: Option<&str>,
         key: Option<&str>,
-    ) -> Result<Stats> {
+    ) -> Result<Vec<HistorySample>> {
         let since = humantime::format_rfc3339_millis(SystemTime::now() - super::KEEP).to_string();
         let mut stmt = self.conn.prepare_cached(
             "SELECT peak_private, started_at, ended_at FROM jobs
@@ -44,20 +44,33 @@ impl Store {
                 r.get::<_, Option<String>>(2)?,
             ))
         })?;
-        let (mut mem, mut secs) = (Vec::new(), Vec::new());
+        let mut samples = Vec::new();
         for row in rows {
             let (peak, start, end) = row?;
-            mem.extend(peak.map(|p| p as u64));
-            secs.extend(start.zip(end).and_then(|(s, e)| seconds_between(&s, &e)));
+            samples.push(HistorySample {
+                peak: peak.map(|p| p as u64),
+                seconds: start.zip(end).and_then(|(s, e)| seconds_between(&s, &e)),
+            });
         }
-        Ok(Stats::from_samples(&mem, &secs))
+        Ok(samples)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{Entry, NewSubmission, Plan};
+    use crate::planner::predict::Stats;
+
+    fn history(
+        store: &Store,
+        project: Option<&str>,
+        command: Option<&str>,
+        key: Option<&str>,
+    ) -> Result<Stats> {
+        Ok(Stats::from_history(&store.history(project, command, key)?))
+    }
+
+    use crate::domain::job::{Entry, NewSubmission, Plan};
 
     fn run(store: &mut Store, project: &str, command: &str, key: &str, peak: i64, state: &str) {
         let new = NewSubmission {
@@ -76,8 +89,9 @@ mod tests {
         store.set_executor(&job, 1, "t").unwrap();
         store.admit(&job, 0, 1).unwrap();
         store.set_started(&job, "/l", None).unwrap();
-        store.record_exit_usage(&job, peak).unwrap();
-        store.finish(&job, state, Some(0)).unwrap();
+        store
+            .finish_with_usage(&job, state.parse().unwrap(), Some(0), Some(peak))
+            .unwrap();
     }
 
     #[test]
@@ -116,19 +130,19 @@ mod tests {
             "canceled",
         );
 
-        let line = store.history(Some("/a"), Some("cargo test"), None).unwrap();
+        let line = history(&store, Some("/a"), Some("cargo test"), None).unwrap();
         assert_eq!(
             (line.samples, line.mem),
             (1, Some(130)),
             "canceled runs are not history"
         );
-        let project = store.history(Some("/a"), None, Some("cargo test")).unwrap();
+        let project = history(&store, Some("/a"), None, Some("cargo test")).unwrap();
         assert_eq!((project.samples, project.mem), (2, Some(260)));
-        let global = store.history(None, None, Some("cargo test")).unwrap();
+        let global = history(&store, None, None, Some("cargo test")).unwrap();
         assert_eq!((global.samples, global.mem), (3, Some(520)));
         assert!(global.seconds.is_some());
         assert_eq!(
-            store.history(None, None, Some("make")).unwrap(),
+            history(&store, None, None, Some("make")).unwrap(),
             Stats::default()
         );
 
@@ -137,7 +151,7 @@ mod tests {
             run(&mut store, "/c", "make", "make", peak, "completed");
         }
         assert_eq!(
-            store.history(Some("/c"), None, Some("make")).unwrap().mem,
+            history(&store, Some("/c"), None, Some("make")).unwrap().mem,
             Some(60)
         );
     }

@@ -1,0 +1,42 @@
+[
+  {
+    "file": "ats-aarch64-apple-darwin.tar.gz",
+    "sha256": "f54547c82351e0b8093475cafdd178c7f1cf18f05ba7e65ea9ebc13b03d25e46",
+    "binary_sha256": "883b0a210179c0e615202c3236abc547232376882e85cdc204ed02f86fca9698",
+    "members": [
+      "ats-aarch64-apple-darwin/LICENSE",
+      "ats-aarch64-apple-darwin/README.md",
+      "ats-aarch64-apple-darwin/ats"
+    ]
+  },
+  {
+    "file": "ats-aarch64-unknown-linux-musl.tar.gz",
+    "sha256": "4f6df2523de9449ecebeb20a310ce4b9285c321028fddc4da961bb4a0ddf75d4",
+    "binary_sha256": "7e08b90cbdc2e38d52552368bd3d3e669be6caff1b7102d10fa19c7329a1cb65",
+    "members": [
+      "ats-aarch64-unknown-linux-musl/LICENSE",
+      "ats-aarch64-unknown-linux-musl/README.md",
+      "ats-aarch64-unknown-linux-musl/ats"
+    ]
+  },
+  {
+    "file": "ats-x86_64-apple-darwin.tar.gz",
+    "sha256": "a3aca4ff5c39949132f2e0bd2b16aefe26cfa8befd9df0319467867398b6655a",
+    "binary_sha256": "6a3d0cfb55ce0c0c11f03e90052fdaa59f74fa96060fe68537dd83a319b5142d",
+    "members": [
+      "ats-x86_64-apple-darwin/LICENSE",
+      "ats-x86_64-apple-darwin/README.md",
+      "ats-x86_64-apple-darwin/ats"
+    ]
+  },
+  {
+    "file": "ats-x86_64-unknown-linux-musl.tar.gz",
+    "sha256": "7f977f62f29056bc04a0456259dbe171b9fb5f12a14c9b10a04c511f92b12d13",
+    "binary_sha256": "1069e6330b1f07d74917392e4c8beb7d095e77d7d46a863852ee77a5c0d09364",
+    "members": [
+      "ats-x86_64-unknown-linux-musl/LICENSE",
+      "ats-x86_64-unknown-linux-musl/README.md",
+      "ats-x86_64-unknown-linux-musl/ats"
+    ]
+  }
+]

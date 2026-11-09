@@ -1,0 +1,136 @@
+{
+  "aarch64-apple-darwin": [
+    {
+      "binary": "old",
+      "sha256": "604ea4db847acbf7b68ae0708270498ba434b6fe412af6be7291395f108941e4"
+    },
+    {
+      "binary": "new",
+      "sha256": "883b0a210179c0e615202c3236abc547232376882e85cdc204ed02f86fca9698"
+    },
+    {
+      "case": "upgrade",
+      "result": "PASS",
+      "schema": [
+        3,
+        5
+      ],
+      "old_state": "completed",
+      "old_exit_code": 7,
+      "queued_exit_code": 0,
+      "started_once": true,
+      "lock_conflict": 409,
+      "matching_replay": 204,
+      "conflicting_replay": 409
+    },
+    {
+      "case": "cancel",
+      "result": "PASS",
+      "schema": [
+        3,
+        5
+      ],
+      "old_state": "canceled",
+      "old_exit_code": null,
+      "queued_exit_code": 0,
+      "started_once": true,
+      "lock_conflict": 409,
+      "matching_replay": 204,
+      "conflicting_replay": 409
+    },
+    {
+      "case": "offline-report",
+      "result": "PASS",
+      "schema": [
+        3,
+        5
+      ],
+      "old_state": "completed",
+      "old_exit_code": 7,
+      "queued_exit_code": 0,
+      "started_once": true,
+      "lock_conflict": 409,
+      "matching_replay": 204,
+      "conflicting_replay": 409
+    },
+    {
+      "case": "refuse-new-schema-and-restore-backup",
+      "result": "PASS",
+      "schema": [
+        3,
+        5,
+        3
+      ],
+      "old_daemon_refused_schema_5": true,
+      "history_exit_code": 9,
+      "integrity": "ok"
+    }
+  ],
+  "x86_64-apple-darwin": [
+    {
+      "binary": "old",
+      "sha256": "604ea4db847acbf7b68ae0708270498ba434b6fe412af6be7291395f108941e4"
+    },
+    {
+      "binary": "new",
+      "sha256": "6a3d0cfb55ce0c0c11f03e90052fdaa59f74fa96060fe68537dd83a319b5142d"
+    },
+    {
+      "case": "upgrade",
+      "result": "PASS",
+      "schema": [
+        3,
+        5
+      ],
+      "old_state": "completed",
+      "old_exit_code": 7,
+      "queued_exit_code": 0,
+      "started_once": true,
+      "lock_conflict": 409,
+      "matching_replay": 204,
+      "conflicting_replay": 409
+    },
+    {
+      "case": "cancel",
+      "result": "PASS",
+      "schema": [
+        3,
+        5
+      ],
+      "old_state": "canceled",
+      "old_exit_code": null,
+      "queued_exit_code": 0,
+      "started_once": true,
+      "lock_conflict": 409,
+      "matching_replay": 204,
+      "conflicting_replay": 409
+    },
+    {
+      "case": "offline-report",
+      "result": "PASS",
+      "schema": [
+        3,
+        5
+      ],
+      "old_state": "completed",
+      "old_exit_code": 7,
+      "queued_exit_code": 0,
+      "started_once": true,
+      "lock_conflict": 409,
+      "matching_replay": 204,
+      "conflicting_replay": 409
+    },
+    {
+      "case": "refuse-new-schema-and-restore-backup",
+      "result": "PASS",
+      "schema": [
+        3,
+        5,
+        3
+      ],
+      "old_daemon_refused_schema_5": true,
+      "history_exit_code": 9,
+      "integrity": "ok"
+    }
+  ]
+}

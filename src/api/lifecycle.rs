@@ -1,21 +1,14 @@
-//! Job lifecycle endpoints used by executors, and the bounded wait used by
-//! the CLI (design 5.4, 7.1).
-
-use std::time::Duration;
-
+//! HTTP lifecycle adapters. Application services own state and waiting rules.
+use super::ApiResult;
+use crate::app::App;
+use crate::protocol::*;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde::Deserialize;
-use serde_json::json;
 
-use super::{ApiError, ApiResult, AppState};
-use crate::store::{PRE_LEASE, SubmissionRow, is_terminal};
-use crate::timing::Deadline;
-
-pub fn routes() -> Router<AppState> {
+pub fn routes() -> Router<App> {
     Router::new()
         .route("/v1/jobs/{id}", get(job))
         .route("/v1/jobs/{id}/executor", post(executor))
@@ -38,260 +31,116 @@ fn ok() -> ApiResult<Response> {
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
-async fn job(State(s): State<AppState>, Path(id): Path<String>) -> ApiResult<Response> {
-    match s.store().job(&id)? {
-        Some(row) => Ok(Json(row).into_response()),
-        None => Err(ApiError(StatusCode::NOT_FOUND, format!("no job {id}"))),
-    }
+async fn job(State(s): State<App>, Path(id): Path<String>) -> ApiResult<Response> {
+    Ok(Json(Job::from(s.job(&id)?)).into_response())
 }
-
-#[derive(Deserialize)]
-struct ExecutorBody {
-    pid: i64,
-    start: String,
-}
-
 async fn executor(
-    State(s): State<AppState>,
+    State(s): State<App>,
     Path(id): Path<String>,
-    Json(b): Json<ExecutorBody>,
+    Json(b): Json<ExecutorRequest>,
 ) -> ApiResult<Response> {
-    s.store().set_executor(&id, b.pid, &b.start)?;
-    s.notify();
+    s.register_executor(&id, b.pid, &b.start)?;
     ok()
 }
-
-#[derive(Deserialize)]
-struct LeaseBody {
-    pid: i64,
-}
-
-/// How long a lease request waits for the scheduler before answering
-/// `granted: false`; it stays under the request-file channel's timeout.
-const LEASE_POLL: Duration = if cfg!(test) {
-    Duration::from_millis(100)
-} else {
-    Duration::from_secs(3)
-};
-
-/// Answers whether the scheduler has admitted the job (design 7.1). The
-/// lease is already committed when it is granted; the request waits a
-/// little for a decision so commands do not lose a polling interval.
 async fn lease(
-    State(s): State<AppState>,
+    State(s): State<App>,
     Path(id): Path<String>,
-    Json(b): Json<LeaseBody>,
+    Json(b): Json<LeaseRequest>,
 ) -> ApiResult<Response> {
-    s.contact(&id);
-    let deadline = Deadline::after(Some(LEASE_POLL));
-    let mut changes = s.changes.subscribe();
-    loop {
-        let row = s
-            .store()
-            .job(&id)?
-            .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, format!("no job {id}")))?;
-        if row.executor_pid != Some(b.pid) {
-            return Err(ApiError(
-                StatusCode::CONFLICT,
-                format!("process {} is not the executor of job {id}", b.pid),
-            ));
-        }
-        if row.state == "admitted" {
-            let terms = s.store().lease_terms(&id)?;
-            return Ok(Json(json!({
-                "granted": true,
-                "parallelism": terms.parallelism,
-                "jobserver_tokens": terms.jobserver_tokens,
-                "env": terms.env,
-            }))
-            .into_response());
-        }
-        if !PRE_LEASE.contains(&row.state.as_str()) {
-            return Err(ApiError(
-                StatusCode::CONFLICT,
-                format!("job {id} is {}", row.state),
-            ));
-        }
-        if deadline.expired() || s.stopping() {
-            return Ok(Json(json!({ "granted": false })).into_response());
-        }
-        let pause = deadline
-            .remaining()
-            .unwrap_or_default()
-            .min(Duration::from_secs(1));
-        let _ = tokio::time::timeout(pause, changes.changed()).await;
-    }
+    let terms = s.lease(&id, b.pid).await?;
+    Ok(Json(LeaseResponse {
+        granted: terms.is_some(),
+        terms,
+    })
+    .into_response())
 }
-
-#[derive(Deserialize)]
-struct StartedBody {
-    log_path: String,
-    pgid: Option<i64>,
-}
-
 async fn started(
-    State(s): State<AppState>,
+    State(s): State<App>,
     Path(id): Path<String>,
-    Json(b): Json<StartedBody>,
+    Json(b): Json<StartedRequest>,
 ) -> ApiResult<Response> {
-    s.store().set_started(&id, &b.log_path, b.pgid)?;
-    s.notify();
+    s.started(&id, &b.log_path, b.pgid)?;
     ok()
 }
-
-#[derive(Deserialize)]
-struct ExitBody {
-    exit_code: i64,
-}
-
 async fn main_result(
-    State(s): State<AppState>,
+    State(s): State<App>,
     Path(id): Path<String>,
-    Json(b): Json<ExitBody>,
+    Json(b): Json<MainResultRequest>,
 ) -> ApiResult<Response> {
-    s.store().set_main_result(&id, b.exit_code)?;
-    s.notify();
+    s.main_result(&id, b.exit_code)?;
     ok()
 }
-
-#[derive(Deserialize)]
-struct FinishedBody {
-    state: String,
-    exit_code: Option<i64>,
-    /// The largest resident size of any process the command waited for,
-    /// for commands too short to sample (design 8.3).
-    max_rss: Option<i64>,
-}
-
 async fn finished(
-    State(s): State<AppState>,
+    State(s): State<App>,
     Path(id): Path<String>,
-    Json(b): Json<FinishedBody>,
+    Json(b): Json<FinishedRequest>,
 ) -> ApiResult<Response> {
-    if !is_terminal(&b.state) {
-        return Err(ApiError(
-            StatusCode::BAD_REQUEST,
-            format!("{} is not a terminal state", b.state),
-        ));
-    }
-    if let Some(rss) = b.max_rss {
-        s.store().record_exit_usage(&id, rss)?;
-    }
-    s.store().finish(&id, &b.state, b.exit_code)?;
-    s.notify();
+    let state = b.state.parse().map_err(|_| {
+        crate::domain::error::InvalidInput(format!("{} is not a terminal state", b.state))
+    })?;
+    s.finished(&id, state, b.exit_code, b.max_rss)?;
     ok()
 }
-
-/// Polled by executors; also tells the daemon that the executor is
-/// connected.
-async fn control(State(s): State<AppState>, Path(id): Path<String>) -> ApiResult<Response> {
-    s.contact(&id);
-    let cancel = s.store().cancel_requested(&id)?;
-    Ok(Json(json!({ "cancel": cancel })).into_response())
+async fn control(State(s): State<App>, Path(id): Path<String>) -> ApiResult<Response> {
+    Ok(Json(ControlResponse {
+        cancel: s.control(&id)?,
+    })
+    .into_response())
 }
-
-#[derive(Deserialize)]
-struct WaitBody {
-    /// Seconds to wait; absent waits without limit.
-    wait_seconds: Option<f64>,
-    /// "main": until the main execution process has a result or the job
-    /// ends. "terminal": until the job ends.
-    until: String,
-}
-
-/// A blocked job waits for `ats unblock` or a cancel, and one too big for
-/// the machine for a decision; both are reported instead of waited out.
-fn reached(row: &SubmissionRow, until: &str) -> bool {
-    is_terminal(&row.job_state)
-        || row.job_state == "blocked"
-        || (until == "main"
-            && (row.main_exit_code.is_some() || row.job_state == "capacity_insufficient"))
-}
-
-/// Waits for a submission's job to reach a condition, up to a time limit,
-/// and returns its state either way with `reached` set accordingly.
 async fn wait(
-    State(s): State<AppState>,
+    State(s): State<App>,
     Path(id): Path<String>,
-    Json(b): Json<WaitBody>,
+    Json(b): Json<WaitRequest>,
 ) -> ApiResult<Response> {
-    if b.until != "main" && b.until != "terminal" {
-        return Err(ApiError(
-            StatusCode::BAD_REQUEST,
-            "until must be main or terminal".into(),
-        ));
-    }
-    let deadline = Deadline::after(b.wait_seconds.map(Duration::from_secs_f64));
-    let mut changes = s.changes.subscribe();
-    let job = s
-        .store()
-        .submission(&id)?
-        .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, format!("no submission {id}")))?
-        .job;
-    let _awaiting = s.awaiting(&job);
-    loop {
-        let row = s
-            .store()
-            .submission(&id)?
-            .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, format!("no submission {id}")))?;
-        let done = reached(&row, &b.until);
-        if done || deadline.expired() || s.stopping() {
-            return Ok(Json(json!({ "reached": done, "submission": row })).into_response());
-        }
-        // Re-check on every change, and at least once a second: tokio's
-        // timers do not count system sleep, while the deadline does.
-        let pause = deadline
-            .remaining()
-            .unwrap_or(Duration::MAX)
-            .min(Duration::from_secs(1));
-        let _ = tokio::time::timeout(pause, changes.changed()).await;
-    }
+    let (reached, submission) = s.wait(&id, b.wait_seconds, b.until.parse()?).await?;
+    Ok(Json(WaitResponse {
+        reached,
+        submission: submission.into(),
+    })
+    .into_response())
 }
-
-async fn cancel(State(s): State<AppState>, Path(id): Path<String>) -> ApiResult<Response> {
-    s.store().cancel_submission(&id)?;
-    s.notify();
+async fn cancel(State(s): State<App>, Path(id): Path<String>) -> ApiResult<Response> {
+    s.cancel(&id)?;
     ok()
 }
-
-async fn detach(State(s): State<AppState>, Path(id): Path<String>) -> ApiResult<Response> {
-    s.store().detach_submission(&id)?;
-    s.notify();
+async fn detach(State(s): State<App>, Path(id): Path<String>) -> ApiResult<Response> {
+    s.detach(&id)?;
     ok()
 }
-
-async fn quiet(State(s): State<AppState>, Path(id): Path<String>) -> ApiResult<Response> {
-    s.store().quiet_submission(&id)?;
-    s.notify();
+async fn quiet(State(s): State<App>, Path(id): Path<String>) -> ApiResult<Response> {
+    s.quiet(&id)?;
     ok()
 }
-
-/// Why a job is where it is: its state, and for a waiting job the
-/// scheduler's latest verdict (design 5.3).
-async fn why(State(s): State<AppState>, Path(id): Path<String>) -> ApiResult<Response> {
-    let row = s
-        .store()
-        .job(&id)?
-        .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, format!("no job {id}")))?;
-    let verdict = s.verdicts.lock().expect("verdicts lock").get(&id).cloned();
-    Ok(Json(json!({ "job": id, "state": row.state, "verdict": verdict })).into_response())
-}
-
-async fn unblock(State(s): State<AppState>, Path(id): Path<String>) -> ApiResult<Response> {
-    s.store().unblock(&id)?;
-    s.notify();
+async fn unblock(State(s): State<App>, Path(id): Path<String>) -> ApiResult<Response> {
+    s.unblock(&id)?;
     ok()
 }
-
-/// A session's submissions still running, for the `Stop` reminder.
-async fn running(State(s): State<AppState>, Path(id): Path<String>) -> ApiResult<Response> {
-    Ok(Json(s.store().running_reminders(&id)?).into_response())
+async fn why(State(s): State<App>, Path(id): Path<String>) -> ApiResult<Response> {
+    let (state, verdict) = s.why(&id)?;
+    Ok(Json(WhyResponse {
+        job: id,
+        state,
+        verdict,
+    })
+    .into_response())
 }
-
-/// A session's submissions that ended unreported, for the
-/// `UserPromptSubmit` reminder; each is reported once.
-async fn ended(State(s): State<AppState>, Path(id): Path<String>) -> ApiResult<Response> {
-    Ok(Json(s.store().take_ended_reminders(&id)?).into_response())
+async fn running(State(s): State<App>, Path(id): Path<String>) -> ApiResult<Response> {
+    Ok(Json(
+        s.running_reminders(&id)?
+            .into_iter()
+            .map(Reminder::from)
+            .collect::<Vec<_>>(),
+    )
+    .into_response())
+}
+async fn ended(State(s): State<App>, Path(id): Path<String>) -> ApiResult<Response> {
+    Ok(Json(
+        s.take_ended_reminders(&id)?
+            .into_iter()
+            .map(Reminder::from)
+            .collect::<Vec<_>>(),
+    )
+    .into_response())
 }
 
 #[cfg(test)]
@@ -316,8 +165,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn invalid_wait_conditions_and_terminal_states_are_bad_requests() {
+        let app = app();
+        let (sub, job) = submit(&app).await;
+        for (path, body) in [
+            (
+                format!("/v1/submissions/{sub}/wait"),
+                json!({"until": "other", "wait_seconds": 0}),
+            ),
+            (
+                format!("/v1/submissions/{sub}/wait"),
+                json!({"until": "main", "wait_seconds": -1}),
+            ),
+            (
+                format!("/v1/jobs/{job}/finished"),
+                json!({"state": "unknown"}),
+            ),
+        ] {
+            assert_eq!(
+                call(&app, "POST", &path, Some(body)).await.0,
+                StatusCode::BAD_REQUEST
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn job_runs_to_terminal() {
-        let state = crate::api::AppState::new(
+        let state = crate::app::App::new(
             crate::store::Store::open_in_memory().unwrap(),
             "t".into(),
             "i".into(),
@@ -361,7 +235,7 @@ mod tests {
         let lease_path = format!("/v1/jobs/{job}/lease");
         let lease = |pid: i64| call(&app, "POST", &lease_path, Some(json!({"pid": pid})));
         assert_eq!(lease(1).await.1["granted"], false);
-        state.store().admit(&job, 1 << 30, 1).unwrap();
+        state.test_admit(&job, 1 << 30, 1);
         // Asking again after a lost answer gets the same lease; only the
         // executor gets it.
         for _ in 0..2 {

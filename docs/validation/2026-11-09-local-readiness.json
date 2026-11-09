@@ -1,0 +1,82 @@
+{
+  "snapshots": [
+    {
+      "at": "2026-11-09T12:05:30.028635+08:00",
+      "binary": "/Users/nanatsuki/.cargo/bin/ats",
+      "schema": 3,
+      "integrity": "ok",
+      "states": {
+        "canceled": 22,
+        "completed": 1904,
+        "running": 1,
+        "start_failed": 4
+      },
+      "active_jobs": [
+        {
+          "id": "j_tmiqacdgq50gc4nc2oup",
+          "state": "running",
+          "executor_pid": 26619
+        }
+      ],
+      "qos_obligations": 5,
+      "binary_sha256": "a766360cbaa3d2bf4358a6d6583ea916f1707eaeff51f1bcd78ba36004bda409",
+      "health": {
+        "version": "0.1.2",
+        "pid": 11647,
+        "started_at": "2026-11-06T04:39:33.279Z",
+        "instance": "d_uurr3oggyvecgcw4ix9j"
+      },
+      "pressure": {
+        "pressured": true,
+        "swap_out_rate": 18603345.511582315,
+        "system_level": 1,
+        "managed": 13123584,
+        "unmanaged": 13231243264
+      },
+      "launchd_pid": 11647,
+      "vm_status": [
+        "ats-linux-arm64: Stopped",
+        "ats-linux-x86_64: Stopped"
+      ]
+    },
+    {
+      "at": "2026-11-09T12:09:19.235937+08:00",
+      "binary": "/Users/nanatsuki/.cargo/bin/ats",
+      "schema": 3,
+      "integrity": "ok",
+      "states": {
+        "canceled": 22,
+        "completed": 1907,
+        "running": 1,
+        "start_failed": 4
+      },
+      "active_jobs": [
+        {
+          "id": "j_tmiqacdgq50gc4nc2oup",
+          "state": "running",
+          "executor_pid": 26619
+        }
+      ],
+      "qos_obligations": 0,
+      "binary_sha256": "a766360cbaa3d2bf4358a6d6583ea916f1707eaeff51f1bcd78ba36004bda409",
+      "health": {
+        "version": "0.1.2",
+        "pid": 11647,
+        "started_at": "2026-11-06T04:39:33.279Z",
+        "instance": "d_uurr3oggyvecgcw4ix9j"
+      },
+      "pressure": {
+        "pressured": false,
+        "swap_out_rate": 0.0,
+        "system_level": 1,
+        "managed": 10207232,
+        "unmanaged": 13499957248
+      },
+      "launchd_pid": 11647,
+      "vm_status": [
+        "ats-linux-arm64: Stopped",
+        "ats-linux-x86_64: Stopped"
+      ]
+    }
+  ]
+}

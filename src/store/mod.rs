@@ -1,23 +1,24 @@
 //! The daemon's SQLite store (design 11). Only the daemon opens it; writes
 //! are committed before the daemon answers (design 7.1).
 
+use crate::domain::resource::Lock;
 use std::path::Path;
-use std::time::SystemTime;
 
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, params};
-use serde::Serialize;
 
-use crate::sched::locks::Lock;
-use crate::sched::predict::Prediction;
-
+mod background;
 mod history;
+mod lifecycle;
+mod processes;
 mod sched;
 
-pub use sched::{HELD, PRE_LEASE};
+use crate::domain::job::JobState;
+use crate::domain::job::{HELD, TERMINAL};
 
 const SCHEMA: &str = include_str!("schema.sql");
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_V5: &str = include_str!("schema_v5.sql");
 const BACKGROUND_SCHEMA: &str = "CREATE TABLE background_processes (
     pid INTEGER NOT NULL,
     start TEXT NOT NULL,
@@ -27,143 +28,39 @@ const BACKGROUND_SCHEMA: &str = "CREATE TABLE background_processes (
 /// How long ended jobs, their records and logs are kept (design 11).
 pub const KEEP: std::time::Duration = std::time::Duration::from_secs(90 * 24 * 3600);
 
-/// Current time as an RFC 3339 string with milliseconds.
-pub fn now() -> String {
-    humantime::format_rfc3339_millis(SystemTime::now()).to_string()
-}
+use crate::timing::now;
 
 pub struct Store {
     conn: Connection,
 }
 
-/// Data needed to register a submission and its job.
-#[derive(Debug, Clone)]
-pub struct NewSubmission {
-    pub entry: Entry,
-    /// Redacted display form of the command.
-    pub command: String,
-    pub cwd: String,
-    pub project_root: String,
-    pub session_id: Option<String>,
-    /// The process that will start the executor, as (pid, start time).
-    pub launcher: Option<(i64, String)>,
-    pub plan: Plan,
-}
-
-/// What admission needs to know about a new job (design 10).
-#[derive(Debug, Clone, Default)]
-pub struct Plan {
-    pub profiles: Vec<String>,
-    pub prediction: Prediction,
-    pub locks: Vec<Lock>,
-    /// Predecessor job ids from `--after`.
-    pub after: Vec<String>,
-    pub run_now: bool,
-    /// Tool and subcommand of a one-command line, for history lookups.
-    pub history_key: Option<String>,
-    /// Environment variables set to the leased parallelism (design 10.5).
-    pub parallel_env: Vec<String>,
-    /// The line runs jobserver clients, so the executor offers a pool.
-    pub jobserver: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Entry {
-    Argv,
-    Sh,
-}
-
-impl Entry {
-    fn as_str(self) -> &'static str {
-        match self {
-            Entry::Argv => "argv",
-            Entry::Sh => "sh",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-pub struct Created {
-    pub submission: String,
-    pub job: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct JobRow {
-    pub id: String,
-    pub state: String,
-    pub entry: String,
-    pub command: String,
-    pub cwd: String,
-    pub project_root: String,
-    pub exit_code: Option<i64>,
-    pub main_exit_code: Option<i64>,
-    pub log_path: Option<String>,
-    pub executor_pid: Option<i64>,
-    /// Peak private memory measured so far, in bytes.
-    pub peak_private: Option<i64>,
-    pub submissions: i64,
-    pub created_at: String,
-    pub started_at: Option<String>,
-    pub ended_at: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct SubmissionRow {
-    pub id: String,
-    pub job: String,
-    pub job_state: String,
-    pub session_id: Option<String>,
-    pub exit_code: Option<i64>,
-    pub main_exit_code: Option<i64>,
-    pub log_path: Option<String>,
-    pub canceled: bool,
-    /// `ats detach`: the `Stop` reminder does not hold the agent for it.
-    pub detached: bool,
-    /// Its end is not reported: the result already reached the agent, or
-    /// it was reported once (design 6.2).
-    pub quiet: bool,
-}
-
-/// A submission a reminder names.
-#[derive(Debug, Clone, Serialize, serde::Deserialize, PartialEq, Eq)]
-pub struct Reminder {
-    pub submission: String,
-    pub job: String,
-    pub state: String,
-    pub exit_code: Option<i64>,
-    pub command: String,
-}
-
-/// A job that has not ended, as the recovery check sees it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ActiveJob {
-    pub id: String,
-    pub state: String,
-    /// The executor process, as (pid, start time).
-    pub executor: Option<(i64, String)>,
-    pub pgid: Option<i64>,
-    /// The process that starts the executor, as (pid, start time).
-    pub launcher: Option<(i64, String)>,
-    pub main_exit_code: Option<i64>,
-    /// Every submission of the job is canceled.
-    pub canceled: bool,
-}
+use crate::domain::job::{
+    ActiveJob, Created, JobRecord, NewSubmission, Reminder, SubmissionRecord,
+};
 
 fn process(pid: Option<i64>, start: Option<String>) -> Option<(i64, String)> {
     pid.zip(start)
 }
 
-/// The named job or submission does not exist.
-#[derive(Debug, thiserror::Error)]
-#[error("{0}")]
-pub struct NotFound(pub String);
+const RECOVERY_COLUMNS: &str =
+    "id, state, executor_pid, executor_start, pgid, launcher_pid, launcher_start, main_exit_code,
+    NOT EXISTS (SELECT 1 FROM submissions s WHERE s.job_id = jobs.id AND s.canceled = 0),
+    finish_state, finish_exit_code, finish_max_rss";
 
-/// The request does not fit the job's current state.
-#[derive(Debug, thiserror::Error)]
-#[error("{0}")]
-pub struct Conflict(pub String);
+fn recovery_row(r: &rusqlite::Row) -> rusqlite::Result<ActiveJob> {
+    Ok(ActiveJob {
+        id: r.get(0)?,
+        state: r.get(1)?,
+        executor: process(r.get(2)?, r.get(3)?),
+        pgid: r.get(4)?,
+        launcher: process(r.get(5)?, r.get(6)?),
+        main_exit_code: r.get(7)?,
+        canceled: r.get(8)?,
+        finish: lifecycle::finish_row(r, 9)?,
+    })
+}
+
+use crate::domain::error::{Conflict, NotFound};
 
 fn no_job(job: &str) -> anyhow::Error {
     NotFound(format!("no job {job}")).into()
@@ -177,8 +74,8 @@ const JOB_COLUMNS: &str = "j.id, j.state, j.entry, j.command, j.cwd, j.project_r
     j.main_exit_code, j.log_path, j.executor_pid, j.peak_private,
     (SELECT COUNT(*) FROM submissions s WHERE s.job_id = j.id), j.created_at, j.started_at, j.ended_at";
 
-fn job_row(r: &rusqlite::Row) -> rusqlite::Result<JobRow> {
-    Ok(JobRow {
+fn job_row(r: &rusqlite::Row) -> rusqlite::Result<JobRecord> {
+    Ok(JobRecord {
         id: r.get(0)?,
         state: r.get(1)?,
         entry: r.get(2)?,
@@ -233,36 +130,15 @@ impl Store {
         if version < 3 {
             tx.execute_batch(BACKGROUND_SCHEMA)?;
         }
+        if version < 4 {
+            tx.execute_batch(processes::SCHEMA)?;
+        }
+        if version < 5 {
+            tx.execute_batch(SCHEMA_V5)?;
+        }
         tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         tx.commit()?;
         Ok(Self { conn })
-    }
-
-    /// Commit the restoration obligation before changing process QoS.
-    pub fn remember_background(&self, pid: i32, start: &str) -> Result<()> {
-        self.conn.execute(
-            "INSERT OR IGNORE INTO background_processes (pid, start) VALUES (?1, ?2)",
-            params![pid, start],
-        )?;
-        Ok(())
-    }
-
-    pub fn background_processes(&self) -> Result<Vec<(i32, String)>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT pid, start FROM background_processes")?;
-        Ok(stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<Result<_, _>>()?)
-    }
-
-    /// Forget only after restoration succeeds or this identity is gone.
-    pub fn forget_background(&self, pid: i32, start: &str) -> Result<()> {
-        self.conn.execute(
-            "DELETE FROM background_processes WHERE pid = ?1 AND start = ?2",
-            params![pid, start],
-        )?;
-        Ok(())
     }
 
     /// Registers a submission with a new queued job, its locks and its
@@ -322,7 +198,7 @@ impl Store {
     }
 
     /// Lists jobs, newest first, optionally filtered by state.
-    pub fn list_jobs(&self, states: &[String], limit: u32) -> Result<Vec<JobRow>> {
+    pub fn list_jobs(&self, states: &[String], limit: u32) -> Result<Vec<JobRecord>> {
         let mut sql = format!("SELECT {JOB_COLUMNS} FROM jobs j");
         if !states.is_empty() {
             let marks = vec!["?"; states.len()].join(",");
@@ -337,7 +213,7 @@ impl Store {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
-    pub fn job(&self, id: &str) -> Result<Option<JobRow>> {
+    pub fn job(&self, id: &str) -> Result<Option<JobRecord>> {
         Ok(self
             .conn
             .query_row(
@@ -349,7 +225,7 @@ impl Store {
     }
 
     /// One submission with its job's state.
-    pub fn submission(&self, id: &str) -> Result<Option<SubmissionRow>> {
+    pub fn submission(&self, id: &str) -> Result<Option<SubmissionRecord>> {
         Ok(self
             .conn
             .query_row(
@@ -358,7 +234,7 @@ impl Store {
                  FROM submissions s JOIN jobs j ON j.id = s.job_id WHERE s.id = ?1",
                 params![id],
                 |r| {
-                    Ok(SubmissionRow {
+                    Ok(SubmissionRecord {
                         id: r.get(0)?,
                         job: r.get(1)?,
                         job_state: r.get(2)?,
@@ -386,125 +262,6 @@ impl Store {
             params![job, now(), kind, detail],
         )?;
         Ok(())
-    }
-
-    /// Updates a job that has not ended and records an event, in one
-    /// transaction.
-    fn update_job(
-        &mut self,
-        job: &str,
-        set: &str,
-        values: &[&dyn rusqlite::ToSql],
-        event: &str,
-        detail: Option<&str>,
-    ) -> Result<()> {
-        let tx = self.conn.transaction()?;
-        let state: String = tx
-            .query_row("SELECT state FROM jobs WHERE id = ?1", params![job], |r| {
-                r.get(0)
-            })
-            .optional()?
-            .ok_or_else(|| no_job(job))?;
-        if is_terminal(&state) {
-            return Err(Conflict(format!("job {job} has already ended ({state})")).into());
-        }
-        let mut all: Vec<&dyn rusqlite::ToSql> = values.to_vec();
-        all.push(&job);
-        tx.execute(
-            &format!("UPDATE jobs SET {set} WHERE id = ?{}", all.len()),
-            all.as_slice(),
-        )?;
-        Self::event(&tx, job, event, detail)?;
-        tx.commit()?;
-        Ok(())
-    }
-
-    /// Records the executor that owns a job. The submitting CLI registers it
-    /// right after starting it and the executor registers itself again;
-    /// both name the same process. Another process is refused, so a job
-    /// never gets two executors.
-    pub fn set_executor(&mut self, job: &str, pid: i64, start: &str) -> Result<()> {
-        let current: Option<(Option<i64>, Option<String>)> = self
-            .conn
-            .query_row(
-                "SELECT executor_pid, executor_start FROM jobs WHERE id = ?1",
-                params![job],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()?;
-        match current.ok_or_else(|| no_job(job))? {
-            (Some(p), Some(s)) if p == pid && s == start => return Ok(()),
-            (Some(p), _) => {
-                return Err(Conflict(format!("job {job} already has executor {p}")).into());
-            }
-            _ => {}
-        }
-        self.update_job(
-            job,
-            "executor_pid = ?1, executor_start = ?2",
-            &[&pid, &start],
-            "executor",
-            Some(&pid.to_string()),
-        )
-    }
-
-    /// Records that the command started in process group `pgid`, with the
-    /// environment the executor added (design 10.5).
-    pub fn set_started(&mut self, job: &str, log_path: &str, pgid: Option<i64>) -> Result<()> {
-        if self.job(job)?.is_some_and(|j| j.state == "running") {
-            return Ok(());
-        }
-        let at = now();
-        self.update_job(
-            job,
-            "state = 'running', started_at = ?1, log_path = ?2, pgid = ?3",
-            &[&at, &log_path, &pgid],
-            "started",
-            None,
-        )
-    }
-
-    /// Records the main process result; the job may still be running
-    /// (design 5.4).
-    pub fn set_main_result(&mut self, job: &str, code: i64) -> Result<()> {
-        self.update_job(
-            job,
-            "main_exit_code = ?1",
-            &[&code],
-            "main_exited",
-            Some(&code.to_string()),
-        )
-    }
-
-    /// Moves a job to a terminal state. Repeating the same terminal state
-    /// is accepted; a different one is a conflict.
-    pub fn finish(&mut self, job: &str, state: &str, exit_code: Option<i64>) -> Result<()> {
-        if !is_terminal(state) {
-            bail!("{state} is not a terminal state");
-        }
-        if self.job(job)?.is_some_and(|j| j.state == state) {
-            return Ok(());
-        }
-        let at = now();
-        self.update_job(
-            job,
-            "state = ?1, exit_code = ?2, ended_at = ?3",
-            &[&state, &exit_code, &at],
-            state,
-            exit_code.map(|c| c.to_string()).as_deref(),
-        )
-    }
-
-    /// Marks a job whose executor is gone while its processes still run
-    /// (design 7.1). It keeps its reservation until they exit.
-    pub fn await_takeover(&mut self, job: &str) -> Result<()> {
-        self.update_job(
-            job,
-            "state = 'awaiting_takeover'",
-            &[],
-            "executor_lost",
-            None,
-        )
     }
 
     /// Keeps each job's measured peak private memory, and raises the
@@ -538,36 +295,24 @@ impl Store {
         )?)
     }
 
-    /// The largest resident size an executor reports at the end. It also
-    /// counts shared and file pages, so it only fills in for a job too short
-    /// to be sampled, as an upper bound (design 8.3).
-    pub fn record_exit_usage(&mut self, job: &str, max_rss: i64) -> Result<()> {
-        self.conn.execute(
-            "UPDATE jobs SET peak_private = COALESCE(peak_private, ?2) WHERE id = ?1",
-            params![job, max_rss],
-        )?;
-        Ok(())
-    }
-
     /// Jobs that have not ended, with what recovery needs.
     pub fn active_jobs(&self) -> Result<Vec<ActiveJob>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, state, executor_pid, executor_start, pgid, launcher_pid, launcher_start, main_exit_code,
-                    NOT EXISTS (SELECT 1 FROM submissions s WHERE s.job_id = jobs.id AND s.canceled = 0)
-             FROM jobs WHERE state NOT IN ('completed', 'start_failed', 'canceled', 'ended_unknown')",
-        )?;
-        let rows = stmt.query_map([], |r| {
-            Ok(ActiveJob {
-                id: r.get(0)?,
-                state: r.get(1)?,
-                executor: process(r.get(2)?, r.get(3)?),
-                pgid: r.get(4)?,
-                launcher: process(r.get(5)?, r.get(6)?),
-                main_exit_code: r.get(7)?,
-                canceled: r.get(8)?,
-            })
-        })?;
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {RECOVERY_COLUMNS} FROM jobs WHERE state NOT IN ('completed', 'start_failed', 'canceled', 'ended_unknown')"
+        ))?;
+        let rows = stmt.query_map([], recovery_row)?;
         Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    pub fn recovery_facts(&self, job: &str) -> Result<ActiveJob> {
+        self.conn
+            .query_row(
+                &format!("SELECT {RECOVERY_COLUMNS} FROM jobs WHERE id = ?1"),
+                params![job],
+                recovery_row,
+            )
+            .optional()?
+            .ok_or_else(|| no_job(job))
     }
 
     fn update_submission(&mut self, id: &str, set: &str) -> Result<String> {
@@ -591,14 +336,31 @@ impl Store {
     /// uncanceled submission ends here while it waits; once running, its
     /// executor stops it.
     pub fn cancel_submission(&mut self, id: &str) -> Result<String> {
-        let job = self.update_submission(id, "canceled = 1")?;
-        if self.cancel_requested(&job)?
-            && self
-                .job(&job)?
-                .is_some_and(|j| PRE_LEASE.contains(&j.state.as_str()))
-        {
-            self.finish(&job, "canceled", None)?;
+        let tx = self.conn.transaction()?;
+        let (job, state): (String, JobState) = tx.query_row(
+            "SELECT s.job_id, j.state FROM submissions s JOIN jobs j ON j.id = s.job_id WHERE s.id = ?1",
+            params![id], |r| Ok((r.get(0)?, r.get(1)?)),
+        ).optional()?.ok_or_else(|| no_submission(id))?;
+        tx.execute(
+            "UPDATE submissions SET canceled = 1 WHERE id = ?1",
+            params![id],
+        )?;
+        let open: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM submissions WHERE job_id = ?1 AND canceled = 0",
+            params![job],
+            |r| r.get(0),
+        )?;
+        if open == 0 && state.pre_lease() {
+            state
+                .transition(crate::domain::job::JobEvent::Finish(JobState::Canceled))
+                .map_err(|e| Conflict(e.to_string()))?;
+            tx.execute(
+                "UPDATE jobs SET state = 'canceled', ended_at = ?2 WHERE id = ?1",
+                params![job, now()],
+            )?;
+            Self::event(&tx, &job, "canceled", None)?;
         }
+        tx.commit()?;
         Ok(job)
     }
 
@@ -658,6 +420,7 @@ impl Store {
         };
         for (job, _) in &old {
             for sql in [
+                "DELETE FROM job_processes WHERE job_id = ?1",
                 "DELETE FROM job_events WHERE job_id = ?1",
                 "DELETE FROM locks WHERE job_id = ?1",
                 "DELETE FROM leases WHERE job_id = ?1",
@@ -699,16 +462,10 @@ impl Store {
     }
 }
 
-/// Terminal job states (design 5.1).
-pub const TERMINAL: &[&str] = &["completed", "start_failed", "canceled", "ended_unknown"];
-
-pub fn is_terminal(state: &str) -> bool {
-    TERMINAL.contains(&state)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::job::{Entry, Plan};
 
     pub(crate) fn sample(command: &str) -> NewSubmission {
         NewSubmission {
@@ -749,7 +506,6 @@ mod tests {
         store.admit(&job, 400, 1).unwrap();
         store.record_peaks(&[(job.clone(), 500)]).unwrap();
         store.record_peaks(&[(job.clone(), 300)]).unwrap();
-        store.record_exit_usage(&job, 900).unwrap();
         assert_eq!(
             store.job(&job).unwrap().unwrap().peak_private,
             Some(500),
@@ -760,6 +516,10 @@ mod tests {
             500,
             "the reservation follows the peak"
         );
+        store
+            .finish_with_usage(&job, JobState::Completed, Some(0), Some(900))
+            .unwrap();
+        assert_eq!(store.job(&job).unwrap().unwrap().peak_private, Some(500));
     }
 
     #[test]
@@ -779,8 +539,20 @@ mod tests {
         );
         submit(Some("another session"));
         store.detach_submission(&detached.submission).unwrap();
-        store.finish(&ended.job, "completed", Some(0)).unwrap();
-        store.finish(&delivered.job, "completed", Some(1)).unwrap();
+        store.set_executor(&ended.job, 1, "t").unwrap();
+        store.admit(&ended.job, 0, 1).unwrap();
+        store
+            .finish(&ended.job, crate::domain::job::JobState::Completed, Some(0))
+            .unwrap();
+        store.set_executor(&delivered.job, 1, "t").unwrap();
+        store.admit(&delivered.job, 0, 1).unwrap();
+        store
+            .finish(
+                &delivered.job,
+                crate::domain::job::JobState::Completed,
+                Some(1),
+            )
+            .unwrap();
         store.quiet_submission(&delivered.submission).unwrap();
         store.cancel_submission(&canceled.submission).unwrap();
         let ids = |r: Vec<Reminder>| r.into_iter().map(|r| r.submission).collect::<Vec<_>>();
@@ -797,7 +569,15 @@ mod tests {
             "reported once"
         );
         // A detached submission does not hold Stop, but its end is reported.
-        store.finish(&detached.job, "completed", Some(0)).unwrap();
+        store.set_executor(&detached.job, 1, "t").unwrap();
+        store.admit(&detached.job, 0, 1).unwrap();
+        store
+            .finish(
+                &detached.job,
+                crate::domain::job::JobState::Completed,
+                Some(0),
+            )
+            .unwrap();
         assert_eq!(
             ids(store.take_ended_reminders("s").unwrap()),
             std::slice::from_ref(&detached.submission)
@@ -816,7 +596,11 @@ mod tests {
         let (old, recent, awaited) = (job(&[]), job(&[]), job(&[]));
         let waiting = job(&[&awaited]);
         for j in [&old, &recent, &awaited] {
-            store.finish(j, "completed", Some(0)).unwrap();
+            store.set_executor(j, 1, "t").unwrap();
+            store.admit(j, 0, 1).unwrap();
+            store
+                .finish(j, crate::domain::job::JobState::Completed, Some(0))
+                .unwrap();
         }
         for j in [&old, &awaited] {
             store

@@ -1,0 +1,200 @@
+{
+  "binary_sha256": "6016d930cfeb228dc83bfcd7818cf08b5bfe3cbc2237eccad3eaa8a3ce3551a0",
+  "results": [
+    {
+      "jobs": 2,
+      "children_per_job": 2,
+      "confirmed_processes": 6,
+      "result": "PASS",
+      "api": {
+        "starting /v1/jobs?limit=1000": {
+          "count": 19,
+          "p50_ms": 1.124,
+          "p95_ms": 2.244,
+          "max_ms": 2.244
+        },
+        "starting /v1/measurements": {
+          "count": 19,
+          "p50_ms": 0.329,
+          "p95_ms": 1.389,
+          "max_ms": 1.389
+        },
+        "submitting POST /v1/jobs": {
+          "count": 2,
+          "p50_ms": 1.499,
+          "p95_ms": 1.8,
+          "max_ms": 1.8
+        },
+        "running /v1/measurements": {
+          "count": 37,
+          "p50_ms": 0.378,
+          "p95_ms": 0.734,
+          "max_ms": 0.811
+        },
+        "running /v1/jobs?limit=1000": {
+          "count": 36,
+          "p50_ms": 1.088,
+          "p95_ms": 2.423,
+          "max_ms": 7.119
+        },
+        "canceling POST /v1/submissions/:id/cancel": {
+          "count": 1,
+          "p50_ms": 0.37,
+          "p95_ms": 0.37,
+          "max_ms": 0.37
+        },
+        "recovered /v1/jobs?limit=1000": {
+          "count": 41,
+          "p50_ms": 1.301,
+          "p95_ms": 2.899,
+          "max_ms": 3.065
+        },
+        "recovered /v1/measurements": {
+          "count": 41,
+          "p50_ms": 0.409,
+          "p95_ms": 1.007,
+          "max_ms": 1.784
+        }
+      },
+      "observed_sample_gap": {
+        "count": 4,
+        "p50_ms": 999.462,
+        "p95_ms": 1007.416,
+        "max_ms": 1007.416
+      },
+      "canceled": 1,
+      "completed": 2
+    },
+    {
+      "jobs": 4,
+      "children_per_job": 4,
+      "confirmed_processes": 20,
+      "result": "PASS",
+      "api": {
+        "starting /v1/jobs?limit=1000": {
+          "count": 19,
+          "p50_ms": 1.104,
+          "p95_ms": 13.368,
+          "max_ms": 13.368
+        },
+        "starting /v1/measurements": {
+          "count": 19,
+          "p50_ms": 0.363,
+          "p95_ms": 12.456,
+          "max_ms": 12.456
+        },
+        "submitting POST /v1/jobs": {
+          "count": 4,
+          "p50_ms": 1.879,
+          "p95_ms": 3.235,
+          "max_ms": 3.235
+        },
+        "running /v1/jobs?limit=1000": {
+          "count": 37,
+          "p50_ms": 0.935,
+          "p95_ms": 2.312,
+          "max_ms": 2.393
+        },
+        "running /v1/measurements": {
+          "count": 37,
+          "p50_ms": 0.352,
+          "p95_ms": 1.475,
+          "max_ms": 6.823
+        },
+        "canceling POST /v1/submissions/:id/cancel": {
+          "count": 2,
+          "p50_ms": 0.487,
+          "p95_ms": 0.501,
+          "max_ms": 0.501
+        },
+        "recovered /v1/jobs?limit=1000": {
+          "count": 39,
+          "p50_ms": 0.732,
+          "p95_ms": 1.639,
+          "max_ms": 1.678
+        },
+        "recovered /v1/measurements": {
+          "count": 39,
+          "p50_ms": 0.227,
+          "p95_ms": 0.943,
+          "max_ms": 6.23
+        }
+      },
+      "observed_sample_gap": {
+        "count": 4,
+        "p50_ms": 980.054,
+        "p95_ms": 993.21,
+        "max_ms": 993.21
+      },
+      "canceled": 2,
+      "completed": 3
+    },
+    {
+      "jobs": 8,
+      "children_per_job": 8,
+      "confirmed_processes": 72,
+      "result": "PASS",
+      "api": {
+        "starting /v1/jobs?limit=1000": {
+          "count": 575,
+          "p50_ms": 1.147,
+          "p95_ms": 2.642,
+          "max_ms": 15.841
+        },
+        "starting /v1/measurements": {
+          "count": 575,
+          "p50_ms": 0.335,
+          "p95_ms": 0.814,
+          "max_ms": 24.155
+        },
+        "submitting POST /v1/jobs": {
+          "count": 8,
+          "p50_ms": 3.673,
+          "p95_ms": 8.525,
+          "max_ms": 8.525
+        },
+        "running /v1/jobs?limit=1000": {
+          "count": 36,
+          "p50_ms": 1.019,
+          "p95_ms": 3.709,
+          "max_ms": 9.273
+        },
+        "running /v1/measurements": {
+          "count": 36,
+          "p50_ms": 0.281,
+          "p95_ms": 1.362,
+          "max_ms": 1.477
+        },
+        "canceling POST /v1/submissions/:id/cancel": {
+          "count": 4,
+          "p50_ms": 0.495,
+          "p95_ms": 0.58,
+          "max_ms": 0.58
+        },
+        "recovered /v1/jobs?limit=1000": {
+          "count": 40,
+          "p50_ms": 1.039,
+          "p95_ms": 1.997,
+          "max_ms": 9.744
+        },
+        "recovered /v1/measurements": {
+          "count": 40,
+          "p50_ms": 0.278,
+          "p95_ms": 0.508,
+          "max_ms": 2.803
+        }
+      },
+      "observed_sample_gap": {
+        "count": 35,
+        "p50_ms": 1008.701,
+        "p95_ms": 1092.56,
+        "max_ms": 1109.863
+      },
+      "canceled": 4,
+      "completed": 5
+    }
+  ],
+  "date": "2026-11-09",
+  "host": "macOS-27.2-arm64-arm-64bit",
+  "method": "Isolated short lifecycle/process-tree acceptance; nearest-rank percentiles; 50 ms probes; planned outages excluded from normal-request errors"
+}

@@ -69,3 +69,9 @@ DSH_RUNTIME_PACKAGE='/Applications/DeepSeek Harness.app/Contents/Resources/app.a
 ```
 
 Set `ATS_BINARY` to verify another ats binary and `DSH_ATS_PLUGIN` to load an installed plugin entry point. This test checks native Bash session attribution and exit code 75, one same-turn running reminder, detach, and one completion reminder in the next turn. Its directory provider is fixed to a temporary directory. It does not make real model requests or drive the desktop UI.
+
+The session assertion deliberately supplies a foreign inherited `CODEX_THREAD_ID`
+and verifies that the native DSH session wins. The plugin receives `ATS_BINARY`
+through its `binary` configuration so the same runtime test can exercise source
+or an installed entry point against a candidate build. Local cross-version and
+runtime results are recorded in [compatibility verification](../../docs/compatibility-verification.md).

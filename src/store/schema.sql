@@ -1,4 +1,5 @@
--- Schema version 1 (design 11). Only the daemon opens this database.
+-- Base schema. Store::init applies later additions transactionally.
+-- Only the daemon opens this database.
 
 CREATE TABLE jobs (
     id                  TEXT PRIMARY KEY,

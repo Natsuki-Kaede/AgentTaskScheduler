@@ -1,6 +1,6 @@
 //! The executor (design 7): a process detached from the agent's tool call
 //! that waits for its lease, runs the command, keeps its output, and reports
-//! the main execution process result and the job's terminal state.
+//! the main execution process result and a completion claim to the daemon.
 
 mod jobserver;
 mod logwriter;
@@ -10,12 +10,17 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use serde_json::json;
 use tokio::io::AsyncReadExt;
 
 use crate::client;
+use crate::domain::job::JobState;
+use crate::domain::resource::LeaseTerms;
 use crate::paths::Paths;
 use crate::procinfo;
+use crate::protocol::{
+    ControlResponse, ExecutorRequest, FinishedRequest, LeaseRequest, LeaseResponse,
+    MainResultRequest, StartedRequest,
+};
 use crate::runspec::RunSpec;
 use logwriter::CappedLog;
 
@@ -36,10 +41,11 @@ const RETRY: Duration = Duration::from_millis(500);
 /// Sends a report until the daemon answers it; the daemon may be
 /// restarting, and the job carries on meanwhile (design 7.1). Reports are
 /// idempotent, so a repeat after a lost answer is harmless.
-async fn report(paths: &Paths, path: &str, body: serde_json::Value) -> client::Answer {
+async fn report(paths: &Paths, path: &str, body: impl serde::Serialize) -> Result<client::Answer> {
+    let body = serde_json::to_value(body)?;
     loop {
         match client::call(paths, "POST", path, Some(body.clone())).await {
-            Ok((answer, _)) if answer.status < 500 => return answer,
+            Ok((answer, _)) if answer.status < 500 => return Ok(answer),
             Ok((answer, _)) => eprintln!("ats executor: {path}: daemon answered {}", answer.status),
             Err(e) => eprintln!("ats executor: {path}: {e:#}"),
         }
@@ -47,8 +53,8 @@ async fn report(paths: &Paths, path: &str, body: serde_json::Value) -> client::A
     }
 }
 
-async fn post(paths: &Paths, path: &str, body: serde_json::Value) -> Result<serde_json::Value> {
-    let answer = report(paths, path, body).await;
+async fn post(paths: &Paths, path: &str, body: impl serde::Serialize) -> Result<serde_json::Value> {
+    let answer = report(paths, path, body).await?;
     if !(200..300).contains(&answer.status) {
         bail!("{path}: daemon answered {}: {}", answer.status, answer.body);
     }
@@ -58,15 +64,18 @@ async fn post(paths: &Paths, path: &str, body: serde_json::Value) -> Result<serd
 /// Registers this executor and waits for the lease. Returns the lease's
 /// terms, or `None` when the job ended before it could start, for example
 /// by being canceled.
-async fn acquire_lease(paths: &Paths, job: &str) -> Result<Option<serde_json::Value>> {
+async fn acquire_lease(paths: &Paths, job: &str) -> Result<Option<LeaseTerms>> {
     let pid = std::process::id() as i32;
     let start = procinfo::start_time(pid).context("reading this process's start time")?;
     let answer = report(
         paths,
         &format!("/v1/jobs/{job}/executor"),
-        json!({ "pid": pid, "start": start }),
+        ExecutorRequest {
+            pid: i64::from(pid),
+            start,
+        },
     )
-    .await;
+    .await?;
     match answer.status {
         204 => {}
         409 => return Ok(None),
@@ -79,13 +88,18 @@ async fn acquire_lease(paths: &Paths, job: &str) -> Result<Option<serde_json::Va
         let answer = report(
             paths,
             &format!("/v1/jobs/{job}/lease"),
-            json!({ "pid": pid }),
+            LeaseRequest {
+                pid: i64::from(pid),
+            },
         )
-        .await;
+        .await?;
         match answer.status {
-            200 if answer.body["granted"] == true => return Ok(Some(answer.body)),
-            // The daemon already held the request while it waited.
-            200 => {}
+            200 => {
+                let lease: LeaseResponse = serde_json::from_value(answer.body)?;
+                if lease.granted {
+                    return Ok(Some(lease.terms.context("granted lease has no terms")?));
+                }
+            }
             409 => return Ok(None),
             s => bail!("asking for the lease: daemon answered {s}: {}", answer.body),
         }
@@ -100,7 +114,7 @@ fn log_dir(paths: &Paths, job: &str) -> Result<PathBuf> {
         return Ok(preferred);
     }
     let fallback = paths.temporary.join("logs").join(job);
-    crate::channel::prepare(&fallback)?;
+    crate::paths::create_private_dir(&fallback)?;
     Ok(fallback)
 }
 
@@ -127,7 +141,7 @@ fn exit_code(status: std::process::ExitStatus) -> i64 {
         .unwrap_or(-1)
 }
 
-/// Runs one job to its terminal state.
+/// Runs one job and reports completion. The daemon confirms owned members have exited.
 pub async fn run(paths: Paths, job: String, spec: RunSpec, cwd: PathBuf) -> Result<()> {
     let Some(terms) = acquire_lease(&paths, &job).await? else {
         return Ok(());
@@ -137,13 +151,8 @@ pub async fn run(paths: Paths, job: String, spec: RunSpec, cwd: PathBuf) -> Resu
     let mut cmd = tokio::process::Command::from(spec.command());
     // Parallelism from the lease (design 10.5); what the submitter set
     // itself stays.
-    if let Some(n) = terms["parallelism"].as_u64() {
-        for var in terms["env"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|v| v.as_str())
-        {
+    if let Some(n) = terms.parallelism {
+        for var in &terms.env {
             if std::env::var_os(var).is_none() {
                 cmd.env(var, n.to_string());
             }
@@ -152,11 +161,10 @@ pub async fn run(paths: Paths, job: String, spec: RunSpec, cwd: PathBuf) -> Resu
     let own_jobserver = ["MAKEFLAGS", "CARGO_MAKEFLAGS"]
         .iter()
         .any(|v| std::env::var_os(v).is_some());
-    let pool = match terms["jobserver_tokens"].as_u64() {
+    let pool = match terms.jobserver_tokens {
         Some(tokens) if !own_jobserver => {
-            let pool =
-                jobserver::Pool::create(&paths.temporary.join("jobserver"), &job, tokens as u32)?;
-            cmd.env("MAKEFLAGS", pool.makeflags(tokens as u32));
+            let pool = jobserver::Pool::create(&paths.temporary.join("jobserver"), &job, tokens)?;
+            cmd.env("MAKEFLAGS", pool.makeflags(tokens));
             Some(pool)
         }
         _ => None,
@@ -190,7 +198,10 @@ async fn run_command(
     post(
         &paths,
         &format!("/v1/jobs/{job}/started"),
-        json!({ "log_path": dir, "pgid": pgid }),
+        StartedRequest {
+            log_path: dir.to_string_lossy().into_owned(),
+            pgid: Some(i64::from(pgid)),
+        },
     )
     .await?;
     cmd.current_dir(cwd)
@@ -212,7 +223,7 @@ async fn run_command(
             post(
                 &paths,
                 &format!("/v1/jobs/{job}/finished"),
-                json!({ "state": "start_failed", "exit_code": 127 }),
+                FinishedRequest::new(JobState::StartFailed, Some(127), None),
             )
             .await?;
             return Ok(());
@@ -228,8 +239,8 @@ async fn run_command(
     ));
 
     let mut canceled = false;
-    let mut family = procinfo::Family::default();
-    family.refresh(pgid);
+    let mut family = crate::runtime::family::Family::default();
+    procinfo::refresh(&mut family, pgid);
     let mut poll = tokio::time::interval(GROUP_POLL);
     let cancel = wait_for_cancel(&paths, &job);
     tokio::pin!(cancel);
@@ -237,7 +248,7 @@ async fn run_command(
         tokio::select! {
             status = child.wait() => break Some(exit_code(status?)),
             () = &mut cancel => { canceled = true; break None; }
-            _ = poll.tick() => family.refresh(pgid),
+            _ = poll.tick() => procinfo::refresh(&mut family, pgid),
         }
     };
     if canceled {
@@ -248,7 +259,7 @@ async fn run_command(
         post(
             &paths,
             &format!("/v1/jobs/{job}/finished"),
-            ended("canceled", None),
+            ended(JobState::Canceled, None),
         )
         .await?;
         return Ok(());
@@ -269,27 +280,27 @@ async fn run_command(
             () = &mut cancel => {
                 stop_family(pgid, &mut family).await;
                 streams.await?;
-                post(&paths, &format!("/v1/jobs/{job}/finished"), ended("canceled", Some(main))).await?;
+                post(&paths, &format!("/v1/jobs/{job}/finished"), ended(JobState::Canceled, Some(main))).await?;
                 return Ok(());
             }
-            _ = poll.tick() => family.refresh(pgid),
+            _ = poll.tick() => procinfo::refresh(&mut family, pgid),
         }
     }
     post(
         &paths,
         &format!("/v1/jobs/{job}/main-result"),
-        json!({ "exit_code": main }),
+        MainResultRequest { exit_code: main },
     )
     .await?;
 
     // Descendants can leave the original group while remaining job work.
-    family.refresh(pgid);
+    procinfo::refresh(&mut family, pgid);
     while !family.is_empty() {
         tokio::select! {
-            _ = poll.tick() => family.refresh(pgid),
+            _ = poll.tick() => procinfo::refresh(&mut family, pgid),
             () = &mut cancel => {
                 stop_family(pgid, &mut family).await;
-                post(&paths, &format!("/v1/jobs/{job}/finished"), ended("canceled", Some(main))).await?;
+                post(&paths, &format!("/v1/jobs/{job}/finished"), ended(JobState::Canceled, Some(main))).await?;
                 return Ok(());
             }
         }
@@ -297,7 +308,7 @@ async fn run_command(
     post(
         &paths,
         &format!("/v1/jobs/{job}/finished"),
-        ended("completed", Some(main)),
+        ended(JobState::Completed, Some(main)),
     )
     .await?;
     Ok(())
@@ -306,14 +317,14 @@ async fn run_command(
 /// The end report, with the largest resident size of any process the
 /// command waited for, in bytes: sampling misses commands shorter than its
 /// interval (design 8.3).
-fn ended(state: &str, exit_code: Option<i64>) -> serde_json::Value {
+fn ended(state: JobState, exit_code: Option<i64>) -> FinishedRequest {
     // SAFETY: getrusage fills the struct.
     let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
     // SAFETY: as above.
     unsafe { libc::getrusage(libc::RUSAGE_CHILDREN, &mut ru) };
     // macOS reports bytes, Linux kilobytes.
     let unit = if cfg!(target_os = "linux") { 1024 } else { 1 };
-    json!({ "state": state, "exit_code": exit_code, "max_rss": ru.ru_maxrss * unit })
+    FinishedRequest::new(state, exit_code, Some(ru.ru_maxrss * unit))
 }
 
 /// Polls the daemon until the job is canceled.
@@ -325,24 +336,30 @@ async fn wait_for_cancel(paths: &Paths, job: &str) {
         else {
             continue;
         };
-        if answer.body["cancel"] == true {
+        if answer.status == 200
+            && serde_json::from_value::<ControlResponse>(answer.body)
+                .is_ok_and(|control| control.cancel)
+        {
             return;
         }
     }
 }
 
-async fn stop_family(pgid: i32, family: &mut procinfo::Family) {
+async fn stop_family(pgid: i32, family: &mut crate::runtime::family::Family) {
     let deadline = tokio::time::Instant::now() + TERM_GRACE;
     loop {
-        family.refresh(pgid);
+        procinfo::refresh(family, pgid);
         if family.is_empty() {
             return;
         }
-        family.signal(if tokio::time::Instant::now() < deadline {
-            libc::SIGTERM
-        } else {
-            libc::SIGKILL
-        });
+        procinfo::signal(
+            family,
+            if tokio::time::Instant::now() < deadline {
+                libc::SIGTERM
+            } else {
+                libc::SIGKILL
+            },
+        );
         tokio::time::sleep(GROUP_POLL).await;
     }
 }
@@ -370,9 +387,9 @@ pub fn spawn_detached(paths: &Paths, job: &str, spec: &RunSpec, cwd: &Path) -> R
         .stdin(Stdio::inherit())
         .stdout(Stdio::null())
         .stderr({
-            crate::channel::prepare(&paths.temporary)?;
+            crate::paths::create_private_dir(&paths.temporary)?;
             let path = error_log(paths, job);
-            crate::channel::prepare(path.parent().expect("has a parent"))?;
+            crate::paths::create_private_dir(path.parent().expect("has a parent"))?;
             std::fs::File::create(path)?
         });
     // SAFETY: setsid is async-signal-safe and runs in the child before exec.
@@ -393,6 +410,7 @@ mod tests {
     use super::*;
     use crate::daemon;
     use crate::daemon::tests::{test_paths, wait_for_socket};
+    use serde_json::json;
 
     async fn submit(paths: &Paths, source: &str) -> (String, String) {
         let body = json!({"entry": "sh", "source": source, "cwd": "/"});
@@ -409,6 +427,26 @@ mod tests {
             .unwrap()
             .0
             .body
+    }
+
+    async fn terminal_job(paths: &Paths, id: &str) -> serde_json::Value {
+        // Acknowledging the report does not release daemon-owned members.
+        // These in-process executors also share the test harness's identity.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let row = job(paths, id).await;
+                if row["state"]
+                    .as_str()
+                    .and_then(|s| s.parse::<JobState>().ok())
+                    .is_some_and(JobState::terminal)
+                {
+                    return row;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("daemon did not confirm completion")
     }
 
     fn sh(source: &str) -> RunSpec {
@@ -434,7 +472,7 @@ mod tests {
         run(paths.clone(), j.clone(), spec, "/".into())
             .await
             .unwrap();
-        let row = job(&paths, &j).await;
+        let row = terminal_job(&paths, &j).await;
         assert_eq!(
             (row["state"].as_str(), row["exit_code"].as_i64()),
             (Some("completed"), Some(3))
@@ -463,7 +501,7 @@ mod tests {
         run(paths.clone(), j.clone(), spec, "/".into())
             .await
             .unwrap();
-        let row = job(&paths, &j).await;
+        let row = terminal_job(&paths, &j).await;
         assert_eq!(row["state"], "start_failed");
         assert_eq!(row["exit_code"], 127);
         let logs = PathBuf::from(row["log_path"].as_str().unwrap());
@@ -487,7 +525,7 @@ mod tests {
         }
         task.await.unwrap().unwrap();
         assert!(saw_main_while_running);
-        assert_eq!(job(&paths, &j).await["state"], "completed");
+        assert_eq!(terminal_job(&paths, &j).await["state"], "completed");
 
         // Canceling the only submission stops the whole process group.
         let (s, j) = submit(&paths, "x").await;
@@ -501,7 +539,7 @@ mod tests {
             .await
             .unwrap();
         task.await.unwrap().unwrap();
-        assert_eq!(job(&paths, &j).await["state"], "canceled");
+        assert_eq!(terminal_job(&paths, &j).await["state"], "canceled");
         let child: i32 = std::fs::read_to_string(&marker)
             .unwrap()
             .trim()
@@ -551,7 +589,11 @@ mod tests {
                 task.abort();
             }
             finished.unwrap().unwrap().unwrap();
-            assert_eq!(job(&paths, &j).await["state"], "canceled", "{redirect}");
+            assert_eq!(
+                terminal_job(&paths, &j).await["state"],
+                "canceled",
+                "{redirect}"
+            );
             assert!(
                 procinfo::start_time(pids[1]).is_none(),
                 "background child survived: {redirect}"
@@ -614,7 +656,7 @@ mod tests {
                 task.abort();
             }
             finished.unwrap().unwrap().unwrap();
-            assert_eq!(job(&paths, &j).await["state"], "canceled");
+            assert_eq!(terminal_job(&paths, &j).await["state"], "canceled");
             assert!(
                 procinfo::start_time(pids[1]).is_none(),
                 "escaped child survived"

@@ -6,19 +6,10 @@
 //! that may run at the same time adds its memory and takes the longest
 //! duration; an unclear line gets the conservative value.
 
-use serde::{Deserialize, Serialize};
-
 use crate::profile::{Class, Profiles};
 use crate::recognize::{Analysis, Node, Segment};
 
-/// What a job is expected to use.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct Prediction {
-    /// Peak memory (R).
-    pub mem: u64,
-    /// Run time, when every part of the line has history.
-    pub seconds: Option<f64>,
-}
+use crate::domain::resource::{HistorySample, Prediction};
 
 /// `--hint mem=6G`: the agent's own estimate, used only where it is higher
 /// than the prediction.
@@ -59,6 +50,12 @@ pub struct Stats {
 }
 
 impl Stats {
+    pub fn from_history(samples: &[HistorySample]) -> Self {
+        let mem: Vec<u64> = samples.iter().filter_map(|s| s.peak).collect();
+        let seconds: Vec<f64> = samples.iter().filter_map(|s| s.seconds).collect();
+        Self::from_samples(&mem, &seconds)
+    }
+
     /// Fewer than five samples: the largest × 1.3; otherwise the 95th
     /// percentile (design 8.3).
     pub fn from_samples(mem: &[u64], seconds: &[f64]) -> Stats {

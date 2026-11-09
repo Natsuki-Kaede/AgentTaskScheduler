@@ -1,61 +1,25 @@
-//! Locks (design 10.4): path resources conflict when one path is the other
-//! or an ancestor of it, compared component by component on the real path;
-//! named resources conflict when equal.
-
-use std::fmt;
-use std::path::{Component, Path, PathBuf};
-
-use serde::{Deserialize, Serialize};
-
+//! Path resolution and write-lock derivation for submission planning.
+use crate::domain::resource::Lock;
 use crate::profile::Writes;
 use crate::recognize::Analysis;
+use std::path::{Component, Path, PathBuf};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "resource", rename_all = "lowercase")]
-pub enum Lock {
-    /// A normalized absolute path.
-    Path(String),
-    /// A device, port or other named resource.
-    Named(String),
+pub fn path(path: &Path) -> Lock {
+    Lock::Path(normalize(path))
 }
 
-impl fmt::Display for Lock {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Lock::Path(p) | Lock::Named(p) => f.write_str(p),
-        }
-    }
-}
-
-impl Lock {
-    pub fn conflicts(&self, other: &Lock) -> bool {
-        match (self, other) {
-            (Lock::Path(a), Lock::Path(b)) => {
-                let (a, b) = (Path::new(a), Path::new(b));
-                a.starts_with(b) || b.starts_with(a)
-            }
-            (Lock::Named(a), Lock::Named(b)) => a == b,
-            _ => false,
-        }
-    }
-
-    pub fn path(path: &Path) -> Lock {
-        Lock::Path(normalize(path))
-    }
-
-    /// A `--lock` value: a path when it looks like one, otherwise a name.
-    pub fn parse(value: &str, cwd: &Path) -> Lock {
-        if value.contains('/') || value.starts_with('.') || value.starts_with('~') {
-            let expanded = match value.strip_prefix('~') {
-                Some(rest) => dirs::home_dir()
-                    .unwrap_or_default()
-                    .join(rest.trim_start_matches('/')),
-                None => cwd.join(value),
-            };
-            Lock::path(&expanded)
-        } else {
-            Lock::Named(value.to_string())
-        }
+/// A `--lock` value: a path when it looks like one, otherwise a name.
+pub fn parse(value: &str, cwd: &Path) -> Lock {
+    if value.contains('/') || value.starts_with('.') || value.starts_with('~') {
+        let expanded = match value.strip_prefix('~') {
+            Some(rest) => dirs::home_dir()
+                .unwrap_or_default()
+                .join(rest.trim_start_matches('/')),
+            None => cwd.join(value),
+        };
+        path(&expanded)
+    } else {
+        Lock::Named(value.to_string())
     }
 }
 
@@ -130,7 +94,7 @@ pub fn for_line(
             Writes::None => {}
             Writes::Args => {
                 for arg in s.argv.iter().skip(1).filter(|a| !a.starts_with('-')) {
-                    locks.push(Lock::path(&s.cwd.join(arg)));
+                    locks.push(path(&s.cwd.join(arg)));
                 }
             }
             Writes::Paths => {
@@ -139,16 +103,16 @@ pub fn for_line(
                     .map(|p| p.write_paths.as_slice())
                     .unwrap_or_default()
                 {
-                    locks.push(Lock::path(&root.join(p)));
+                    locks.push(path(&root.join(p)));
                 }
             }
-            Writes::Project => locks.push(Lock::path(&project_root(&s.cwd))),
+            Writes::Project => locks.push(path(&project_root(&s.cwd))),
         }
         for file in &s.redirect_writes {
-            locks.push(Lock::path(&s.cwd.join(file)));
+            locks.push(path(&s.cwd.join(file)));
         }
     }
-    locks.extend(extra.iter().map(|e| Lock::parse(e, cwd)));
+    locks.extend(extra.iter().map(|e| parse(e, cwd)));
     // Drop duplicates and paths inside another locked path.
     let mut out: Vec<Lock> = Vec::new();
     for l in locks {
@@ -204,11 +168,11 @@ mod tests {
         let target = dir.path().join("real/child");
         std::fs::create_dir_all(&target).unwrap();
         std::os::unix::fs::symlink(&target, dir.path().join("link")).unwrap();
-        let alias = Lock::path(&dir.path().join("link/../missing/output"));
-        let real = Lock::path(&dir.path().join("real/missing/output"));
+        let alias = path(&dir.path().join("link/../missing/output"));
+        let real = path(&dir.path().join("real/missing/output"));
         assert_eq!(alias, real);
         assert!(alias.conflicts(&real));
-        assert!(!alias.conflicts(&Lock::path(&dir.path().join("missing/output"))));
+        assert!(!alias.conflicts(&path(&dir.path().join("missing/output"))));
     }
 
     #[test]

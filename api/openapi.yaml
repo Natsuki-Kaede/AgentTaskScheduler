@@ -188,8 +188,12 @@ paths:
 
   /v1/jobs/{id}/finished:
     post:
-      summary: The job reached a terminal state
-      description: Repeating the same terminal state is accepted; a different one gets 409.
+      summary: Report the executor's completion result
+      description: |
+        The report is persisted before acknowledgement. The daemon retains the job's
+        reservation and locks until its confirmed process members have exited.
+        Repeating the same state, exit code and max_rss is accepted; a conflicting
+        report gets 409. Use a job query or a terminal wait to confirm finalization.
       parameters:
         - { $ref: '#/components/parameters/Id' }
       requestBody:
@@ -202,7 +206,7 @@ paths:
               properties:
                 state: { $ref: '#/components/schemas/JobState' }
                 exit_code: { type: [integer, 'null'] }
-                max_rss: { type: integer, description: Largest resident size of any process the command waited for, in bytes; used only when sampling saw nothing }
+                max_rss: { type: integer, minimum: 0, description: Largest resident size of any process the command waited for, in bytes; used only when sampling saw nothing }
       responses:
         '204': { description: Recorded }
         '400': { $ref: '#/components/responses/Error' }

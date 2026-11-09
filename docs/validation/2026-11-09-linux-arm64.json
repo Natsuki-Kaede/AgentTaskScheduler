@@ -1,0 +1,392 @@
+{
+  "date": "2026-11-09",
+  "baseline_revision": "ea287ee44603dc7124050a7ab805fb4396f27c29",
+  "candidate_archive_sha256": "9c44a17b07817826b67ed83a7aee227b7d74cae00a7acb2377f1daeb55c06b4f",
+  "execution": "Linux Arm64 VZ virtual machine",
+  "runner_tools": {
+    "lima_cli": "2.3.0",
+    "qemu": null
+  },
+  "vm": {
+    "name": "ats-linux-arm64",
+    "vmType": "vz",
+    "arch": "aarch64",
+    "cpus": 2,
+    "memory": 4294967296,
+    "disk": 21474836480,
+    "limaVersion": "2.2.1",
+    "mounts": [],
+    "image": {
+      "location": "/var/folders/k0/hw53hf1j21g6vr9pb5_w1yw40000gn/T/ats-linux-acceptance-8iia9ln1/ubuntu-arm64.img",
+      "arch": "aarch64",
+      "digest": "sha256:fbf6b15c50c474dc6dee5b3c74da212bb687a2625e877227828e6492d88dc151"
+    }
+  },
+  "environment": {
+    "uname": {
+      "system": "Linux",
+      "node": "lima-ats-linux-arm64",
+      "release": "6.8.0-146-generic",
+      "version": "#146-Ubuntu SMP PREEMPT_DYNAMIC Thu Sep  3 16:20:48 UTC 2026",
+      "machine": "aarch64",
+      "processor": "aarch64"
+    },
+    "glibc": "glibc 2.39",
+    "os_release": "PRETTY_NAME=\"Ubuntu 24.04.5 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"24.04\"\nVERSION=\"24.04.5 LTS (Noble Numbat)\"\nVERSION_CODENAME=noble\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=noble\nLOGO=ubuntu-logo\n",
+    "cores": 2,
+    "node": "v24.19.0",
+    "python": "3.12.3"
+  },
+  "rust_tests": {
+    "unit": 134,
+    "architecture": 4,
+    "hook": 5,
+    "recovery": 7
+  },
+  "fmt_and_clippy": "PASS in this guest",
+  "node_adapter_tests": {
+    "passed": 3,
+    "failed": 0,
+    "installed_dsh_runtime_skipped": 1
+  },
+  "upgrade": [
+    {
+      "binary": "old",
+      "sha256": "86c56fcc63ac3eb09c3a6a204f20e4d645150197a84256eb1b4c16e95eacaa6d"
+    },
+    {
+      "binary": "new",
+      "sha256": "58e6dc68d1130b603f0c9107df3ef930f816671c83e52959821b790d6868b833"
+    },
+    {
+      "case": "upgrade",
+      "result": "PASS",
+      "schema": [
+        3,
+        5
+      ],
+      "old_state": "completed",
+      "old_exit_code": 7,
+      "queued_exit_code": 0,
+      "started_once": true,
+      "lock_conflict": 409,
+      "matching_replay": 204,
+      "conflicting_replay": 409
+    },
+    {
+      "case": "cancel",
+      "result": "PASS",
+      "schema": [
+        3,
+        5
+      ],
+      "old_state": "canceled",
+      "old_exit_code": null,
+      "queued_exit_code": 0,
+      "started_once": true,
+      "lock_conflict": 409,
+      "matching_replay": 204,
+      "conflicting_replay": 409
+    },
+    {
+      "case": "offline-report",
+      "result": "PASS",
+      "schema": [
+        3,
+        5
+      ],
+      "old_state": "completed",
+      "old_exit_code": 7,
+      "queued_exit_code": 0,
+      "started_once": true,
+      "lock_conflict": 409,
+      "matching_replay": 204,
+      "conflicting_replay": 409
+    },
+    {
+      "case": "refuse-new-schema-and-restore-backup",
+      "result": "PASS",
+      "schema": [
+        3,
+        5,
+        3
+      ],
+      "old_daemon_refused_schema_5": true,
+      "history_exit_code": 9,
+      "integrity": "ok"
+    }
+  ],
+  "stress": {
+    "binary_sha256": "58e6dc68d1130b603f0c9107df3ef930f816671c83e52959821b790d6868b833",
+    "results": [
+      {
+        "jobs": 2,
+        "children_per_job": 2,
+        "confirmed_processes": 6,
+        "result": "PASS",
+        "api": {
+          "starting /v1/jobs?limit=1000": {
+            "count": 19,
+            "p50_ms": 1.232,
+            "p95_ms": 2.365,
+            "max_ms": 2.365
+          },
+          "starting /v1/measurements": {
+            "count": 19,
+            "p50_ms": 0.393,
+            "p95_ms": 1.827,
+            "max_ms": 1.827
+          },
+          "submitting POST /v1/jobs": {
+            "count": 2,
+            "p50_ms": 2.159,
+            "p95_ms": 3.432,
+            "max_ms": 3.432
+          },
+          "running /v1/jobs?limit=1000": {
+            "count": 39,
+            "p50_ms": 0.682,
+            "p95_ms": 2.375,
+            "max_ms": 2.769
+          },
+          "running /v1/measurements": {
+            "count": 39,
+            "p50_ms": 0.231,
+            "p95_ms": 0.508,
+            "max_ms": 1.01
+          },
+          "recovered /v1/measurements": {
+            "count": 43,
+            "p50_ms": 0.254,
+            "p95_ms": 0.681,
+            "max_ms": 1.062
+          },
+          "canceling POST /v1/submissions/:id/cancel": {
+            "count": 1,
+            "p50_ms": 0.824,
+            "p95_ms": 0.824,
+            "max_ms": 0.824
+          },
+          "recovered /v1/jobs?limit=1000": {
+            "count": 42,
+            "p50_ms": 0.632,
+            "p95_ms": 1.132,
+            "max_ms": 1.62
+          }
+        },
+        "observed_sample_gap": {
+          "count": 4,
+          "p50_ms": 999.839,
+          "p95_ms": 1044.402,
+          "max_ms": 1044.402
+        },
+        "canceled": 1,
+        "completed": 2
+      },
+      {
+        "jobs": 4,
+        "children_per_job": 4,
+        "confirmed_processes": 20,
+        "result": "PASS",
+        "api": {
+          "starting /v1/jobs?limit=1000": {
+            "count": 19,
+            "p50_ms": 1.334,
+            "p95_ms": 7.369,
+            "max_ms": 7.369
+          },
+          "starting /v1/measurements": {
+            "count": 19,
+            "p50_ms": 0.527,
+            "p95_ms": 11.127,
+            "max_ms": 11.127
+          },
+          "submitting POST /v1/jobs": {
+            "count": 4,
+            "p50_ms": 4.291,
+            "p95_ms": 5.658,
+            "max_ms": 5.658
+          },
+          "running /v1/jobs?limit=1000": {
+            "count": 38,
+            "p50_ms": 1.03,
+            "p95_ms": 1.387,
+            "max_ms": 1.971
+          },
+          "running /v1/measurements": {
+            "count": 38,
+            "p50_ms": 0.399,
+            "p95_ms": 0.85,
+            "max_ms": 1.814
+          },
+          "canceling POST /v1/submissions/:id/cancel": {
+            "count": 2,
+            "p50_ms": 0.929,
+            "p95_ms": 1.661,
+            "max_ms": 1.661
+          },
+          "recovered /v1/jobs?limit=1000": {
+            "count": 42,
+            "p50_ms": 0.81,
+            "p95_ms": 1.366,
+            "max_ms": 2.752
+          },
+          "recovered /v1/measurements": {
+            "count": 42,
+            "p50_ms": 0.294,
+            "p95_ms": 0.433,
+            "max_ms": 0.473
+          }
+        },
+        "observed_sample_gap": {
+          "count": 5,
+          "p50_ms": 982.205,
+          "p95_ms": 1039.797,
+          "max_ms": 1039.797
+        },
+        "canceled": 2,
+        "completed": 3
+      },
+      {
+        "jobs": 8,
+        "children_per_job": 8,
+        "confirmed_processes": 72,
+        "result": "PASS",
+        "api": {
+          "starting /v1/jobs?limit=1000": {
+            "count": 465,
+            "p50_ms": 1.129,
+            "p95_ms": 19.025,
+            "max_ms": 2171.898
+          },
+          "starting /v1/measurements": {
+            "count": 465,
+            "p50_ms": 0.372,
+            "p95_ms": 7.28,
+            "max_ms": 1362.831
+          },
+          "submitting POST /v1/jobs": {
+            "count": 8,
+            "p50_ms": 4.595,
+            "p95_ms": 8.375,
+            "max_ms": 8.375
+          },
+          "running /v1/jobs?limit=1000": {
+            "count": 5,
+            "p50_ms": 376.53,
+            "p95_ms": 1290.192,
+            "max_ms": 1290.192
+          },
+          "running /v1/measurements": {
+            "count": 5,
+            "p50_ms": 279.402,
+            "p95_ms": 323.835,
+            "max_ms": 323.835
+          },
+          "recovered /v1/measurements": {
+            "count": 32,
+            "p50_ms": 1.672,
+            "p95_ms": 106.701,
+            "max_ms": 151.952
+          },
+          "recovered /v1/jobs?limit=1000": {
+            "count": 31,
+            "p50_ms": 3.323,
+            "p95_ms": 80.388,
+            "max_ms": 98.945
+          },
+          "canceling POST /v1/submissions/:id/cancel": {
+            "count": 4,
+            "p50_ms": 42.352,
+            "p95_ms": 155.816,
+            "max_ms": 155.816
+          }
+        },
+        "observed_sample_gap": {
+          "count": 37,
+          "p50_ms": 1014.128,
+          "p95_ms": 4058.885,
+          "max_ms": 4082.69
+        },
+        "canceled": 4,
+        "completed": 5
+      }
+    ]
+  },
+  "release_upgrade": [
+    {
+      "binary": "old",
+      "sha256": "86c56fcc63ac3eb09c3a6a204f20e4d645150197a84256eb1b4c16e95eacaa6d"
+    },
+    {
+      "binary": "new",
+      "sha256": "7e08b90cbdc2e38d52552368bd3d3e669be6caff1b7102d10fa19c7329a1cb65"
+    },
+    {
+      "case": "upgrade",
+      "result": "PASS",
+      "schema": [
+        3,
+        5
+      ],
+      "old_state": "completed",
+      "old_exit_code": 7,
+      "queued_exit_code": 0,
+      "started_once": true,
+      "lock_conflict": 409,
+      "matching_replay": 204,
+      "conflicting_replay": 409
+    },
+    {
+      "case": "cancel",
+      "result": "PASS",
+      "schema": [
+        3,
+        5
+      ],
+      "old_state": "canceled",
+      "old_exit_code": null,
+      "queued_exit_code": 0,
+      "started_once": true,
+      "lock_conflict": 409,
+      "matching_replay": 204,
+      "conflicting_replay": 409
+    },
+    {
+      "case": "offline-report",
+      "result": "PASS",
+      "schema": [
+        3,
+        5
+      ],
+      "old_state": "completed",
+      "old_exit_code": 7,
+      "queued_exit_code": 0,
+      "started_once": true,
+      "lock_conflict": 409,
+      "matching_replay": 204,
+      "conflicting_replay": 409
+    },
+    {
+      "case": "refuse-new-schema-and-restore-backup",
+      "result": "PASS",
+      "schema": [
+        3,
+        5,
+        3
+      ],
+      "old_daemon_refused_schema_5": true,
+      "history_exit_code": 9,
+      "integrity": "ok"
+    }
+  ],
+  "systemd_service": {
+    "result": "PASS",
+    "install": true,
+    "reinstall_same_pid": true,
+    "restart_after_sigkill": true,
+    "history_exit_code": 7,
+    "uninstall": true,
+    "schema": 5
+  }
+}

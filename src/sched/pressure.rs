@@ -6,27 +6,12 @@
 
 use std::collections::VecDeque;
 
-use serde::Serialize;
-
 /// Swap-out bytes per second, averaged, that count as rising pressure:
 /// 256 pages of 16 KB.
 pub const SWAPOUT_RATE: f64 = 4.0 * 1024.0 * 1024.0;
 const WINDOW: usize = 10;
 /// Seconds without pressure before admission and QoS return to normal.
 pub const CALM_SECS: f64 = 30.0;
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
-pub struct PressureStatus {
-    pub pressured: bool,
-    /// Swap-out bytes per second, averaged over the last 10 seconds.
-    pub swap_out_rate: f64,
-    /// The system's own level: 1 normal, 4 critical (macOS also reports 2,
-    /// warning).
-    pub system_level: u8,
-    /// Memory resident in managed jobs and everything else.
-    pub managed: u64,
-    pub unmanaged: u64,
-}
 
 /// Pressure over time, from one reading a second.
 #[derive(Debug, Default)]

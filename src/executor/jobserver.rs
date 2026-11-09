@@ -17,7 +17,7 @@ impl Pool {
     /// Creates the fifo with `tokens` tokens. The executor keeps it open
     /// for reading and writing, so clients never see it closed.
     pub fn create(dir: &std::path::Path, job: &str, tokens: u32) -> Result<Pool> {
-        crate::channel::prepare(dir)?;
+        crate::paths::create_private_dir(dir)?;
         let path = dir.join(format!("{job}.fifo"));
         let _ = std::fs::remove_file(&path);
         let c = CString::new(path.as_os_str().as_bytes())?;

@@ -5,5 +5,6 @@ cd "$(dirname "$0")/.."
 
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
+# Includes AST module-boundary gates and their negative fixtures.
 cargo test
 node --test plugins/dsh/test/*.test.mjs

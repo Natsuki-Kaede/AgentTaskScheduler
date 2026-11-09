@@ -52,6 +52,53 @@ fn runs_directly_inside_a_job() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "nested\n");
 }
 
+#[test]
+fn a_connected_unresponsive_daemon_does_not_hold_the_stop_hook() {
+    use std::io::Read;
+    use std::time::{Duration, Instant};
+    let dir = tempfile::tempdir().unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(dir.path().join("ats.sock")).unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(4)))
+            .unwrap();
+        let mut bytes = [0; 4096];
+        assert!(socket.read(&mut bytes).unwrap() > 0);
+        while socket.read(&mut bytes).unwrap() != 0 {}
+    });
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ats"))
+        .args(["hook", "codex", "stop"])
+        .env("ATS_HOME", dir.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"{\"session_id\":\"timeout-test\",\"stop_hook_active\":false}")
+        .unwrap();
+    let start = Instant::now();
+    while child.try_wait().unwrap().is_none() && start.elapsed() < Duration::from_secs(3) {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let finished = child.try_wait().unwrap().is_some();
+    if !finished {
+        child.kill().unwrap();
+    }
+    let output = child.wait_with_output().unwrap();
+    server.join().unwrap();
+    assert!(finished, "hook exceeded its request budget");
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        output.stdout.is_empty(),
+        "a failed reminder must let the agent continue"
+    );
+}
+
 fn wait_until(what: &str, mut ok: impl FnMut() -> bool) {
     let start = std::time::Instant::now();
     while !ok() {

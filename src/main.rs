@@ -5,22 +5,27 @@
 compile_error!("ats supports macOS and Linux");
 
 mod api;
+mod app;
 mod channel;
 mod cli;
 mod client;
 mod config;
 mod control;
 mod daemon;
+mod domain;
 mod executor;
 mod hook;
 mod ids;
 mod install;
 mod paths;
+mod planner;
 mod procinfo;
 mod profile;
+mod protocol;
 mod recognize;
 mod redact;
 mod runspec;
+mod runtime;
 mod sample;
 mod sched;
 mod store;
@@ -262,10 +267,11 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
             if answer.status != 200 {
                 anyhow::bail!("daemon answered {}: {}", answer.status, answer.body);
             }
+            let jobs: Vec<protocol::Job> = serde_json::from_value(answer.body)?;
             if json {
-                println!("{}", serde_json::to_string_pretty(&answer.body)?);
+                println!("{}", serde_json::to_string_pretty(&jobs)?);
             } else {
-                print_jobs(&answer.body);
+                print_jobs(&jobs);
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -379,20 +385,11 @@ fn agent_session() -> Option<String> {
     .find_map(|v| std::env::var(v).ok().filter(|s| !s.is_empty()))
 }
 
-fn print_jobs(jobs: &serde_json::Value) {
-    let Some(list) = jobs.as_array() else {
-        println!("{jobs}");
-        return;
-    };
-    if list.is_empty() {
+fn print_jobs(jobs: &[protocol::Job]) {
+    if jobs.is_empty() {
         println!("no jobs");
     }
-    for job in list {
-        println!(
-            "{:<24} {:<12} {}",
-            job["id"].as_str().unwrap_or("?"),
-            job["state"].as_str().unwrap_or("?"),
-            job["command"].as_str().unwrap_or("")
-        );
+    for job in jobs {
+        println!("{:<24} {:<12} {}", job.id, job.state, job.command);
     }
 }

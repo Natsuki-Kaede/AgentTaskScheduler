@@ -14,6 +14,8 @@ use http_body_util::BodyExt;
 use serde::{Deserialize, Serialize};
 use tower::ServiceExt;
 
+use crate::timing::Deadline;
+
 const POLL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -29,16 +31,7 @@ pub struct FileResponse {
     pub body: serde_json::Value,
 }
 
-/// Creates the channel directory, readable only by the current user.
-pub fn prepare(dir: &Path) -> Result<()> {
-    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
-    }
-    Ok(())
-}
+use crate::paths::create_private_dir;
 
 fn write_atomically(path: &Path, bytes: &[u8]) -> Result<()> {
     let tmp = path.with_extension("tmp");
@@ -49,7 +42,7 @@ fn write_atomically(path: &Path, bytes: &[u8]) -> Result<()> {
 
 /// Answers requests found in `dir` until the task is dropped.
 pub async fn serve(dir: PathBuf, router: Router) -> Result<()> {
-    prepare(&dir)?;
+    create_private_dir(&dir)?;
     loop {
         for entry in std::fs::read_dir(&dir)? {
             let path = entry?.path();
@@ -113,8 +106,8 @@ pub async fn request(dir: &Path, req: &FileRequest, timeout: Duration) -> Result
     let resp_path = dir.join(format!("{id}.resp"));
     write_atomically(&req_path, &serde_json::to_vec(req)?)
         .with_context(|| format!("writing to {}", dir.display()))?;
-    let deadline = tokio::time::Instant::now() + timeout;
-    while tokio::time::Instant::now() < deadline {
+    let deadline = Deadline::after(Some(timeout));
+    while !deadline.expired() {
         if let Ok(raw) = std::fs::read(&resp_path) {
             std::fs::remove_file(&resp_path)?;
             return Ok(serde_json::from_slice(&raw)?);

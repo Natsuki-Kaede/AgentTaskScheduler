@@ -75,6 +75,17 @@ fn temporary_root(base: &std::path::Path, uid: u32) -> PathBuf {
     base.join(format!("ats-{uid}"))
 }
 
+/// Creates the channel directory, readable only by the current user.
+pub fn create_private_dir(dir: &std::path::Path) -> Result<()> {
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

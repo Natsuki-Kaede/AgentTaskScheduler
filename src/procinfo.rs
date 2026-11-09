@@ -6,7 +6,11 @@
 /// Start time of a process, or `None` when it does not exist. Together with
 /// the process id it identifies one process, since ids are reused.
 pub fn start_time(pid: i32) -> Option<String> {
-    imp::proc(pid).map(|p| p.start)
+    imp::proc(pid).ok().flatten().map(|p| p.start)
+}
+
+pub fn probe(pid: i32) -> std::io::Result<Option<Proc>> {
+    imp::proc(pid)
 }
 
 /// True when the process with this id and start time still exists.
@@ -21,66 +25,48 @@ pub fn group_alive(pgid: i32) -> bool {
     unsafe { libc::kill(-pgid, 0) == 0 }
 }
 
-/// Processes observed in a job's group and their descendants. Identities
-/// survive a descendant changing its group or being reparented.
-#[derive(Default)]
-pub struct Family {
-    members: std::collections::HashMap<i32, String>,
+pub use crate::domain::process::Process as Proc;
+use crate::domain::process::ProcessTable;
+use crate::runtime::family::Family;
+
+/// Refresh a local executor's ownership without forgetting it on enumeration failure.
+pub fn refresh(family: &mut Family, pgid: i32) {
+    match snapshot() {
+        Ok(table) => family.observe(Some(pgid), None, &table),
+        Err(e) => tracing::warn!("enumerating job processes: {e}"),
+    }
 }
 
-impl Family {
-    pub fn observe(&mut self, pgid: i32, processes: &[Proc]) {
-        self.members
-            .retain(|pid, start| processes.iter().any(|p| p.pid == *pid && p.start == *start));
-        for p in processes.iter().filter(|p| p.pgid == pgid) {
-            self.members.insert(p.pid, p.start.clone());
-        }
-        loop {
-            let mut added = false;
-            for p in processes {
-                if !self.members.contains_key(&p.pid) && self.members.contains_key(&p.ppid) {
-                    self.members.insert(p.pid, p.start.clone());
-                    added = true;
-                }
-            }
-            if !added {
-                break;
-            }
-        }
-    }
-
-    pub fn refresh(&mut self, pgid: i32) {
-        self.observe(pgid, &list());
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.members.is_empty()
-    }
-
-    pub fn signal(&self, signal: i32) {
-        for (pid, start) in &self.members {
-            if alive(*pid, start) {
-                // SAFETY: this identity was observed as part of the job.
-                unsafe {
-                    libc::kill(*pid, signal);
-                }
+pub fn signal(family: &Family, signal: i32) {
+    for identity in family.members() {
+        if alive(identity.pid, &identity.start) {
+            // SAFETY: rechecks an identity confirmed as part of this job.
+            unsafe {
+                libc::kill(identity.pid, signal);
             }
         }
     }
 }
 
-/// One process as the system lists it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Proc {
-    pub pid: i32,
-    pub ppid: i32,
-    pub pgid: i32,
-    pub start: String,
+/// Failure to enumerate processes must not be treated as an empty machine.
+pub fn snapshot() -> std::io::Result<ProcessTable> {
+    let mut table = ProcessTable::default();
+    for pid in imp::all_pids()? {
+        match imp::proc(pid) {
+            Ok(Some(process)) => table.processes.push(process),
+            Ok(None) => {}
+            Err(_) => {
+                table.uncertain.insert(pid);
+            }
+        }
+    }
+    Ok(table)
 }
 
 /// Every process the system lists.
+#[cfg(test)]
 pub fn list() -> Vec<Proc> {
-    imp::all_pids().into_iter().filter_map(imp::proc).collect()
+    snapshot().map(|t| t.processes).unwrap_or_default()
 }
 
 #[cfg(target_os = "linux")]
@@ -88,31 +74,43 @@ mod imp {
     use super::Proc;
 
     /// Reads `/proc/<pid>/stat`. The start time is in clock ticks since boot.
-    pub fn proc(pid: i32) -> Option<Proc> {
-        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    pub fn proc(pid: i32) -> std::io::Result<Option<Proc>> {
+        let stat = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(stat) => stat,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        parse(pid, &stat).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid process stat")
+        })
+    }
+
+    fn parse(pid: i32, stat: &str) -> Option<Option<Proc>> {
         // The command name in parentheses can hold spaces and parentheses.
         let fields: Vec<&str> = stat
             .get(stat.rfind(')')? + 1..)?
             .split_whitespace()
             .collect();
         if matches!(fields.first(), Some(&"Z" | &"X")) {
-            return None;
+            return Some(None);
         }
         // Fields 4, 5 and 22 of proc(5), counted from the state (field 3).
-        Some(Proc {
+        Some(Some(Proc {
             pid,
             ppid: fields.get(1)?.parse().ok()?,
             pgid: fields.get(2)?.parse().ok()?,
             start: fields.get(19)?.to_string(),
-        })
+        }))
     }
 
-    pub fn all_pids() -> Vec<i32> {
-        std::fs::read_dir("/proc")
-            .into_iter()
-            .flatten()
-            .filter_map(|e| e.ok()?.file_name().to_str()?.parse().ok())
-            .collect()
+    pub fn all_pids() -> std::io::Result<Vec<i32>> {
+        let mut pids = Vec::new();
+        for entry in std::fs::read_dir("/proc")? {
+            if let Some(pid) = entry?.file_name().to_str().and_then(|s| s.parse().ok()) {
+                pids.push(pid);
+            }
+        }
+        Ok(pids)
     }
 }
 
@@ -122,7 +120,7 @@ mod imp {
 
     use super::Proc;
 
-    pub fn proc(pid: i32) -> Option<Proc> {
+    pub fn proc(pid: i32) -> std::io::Result<Option<Proc>> {
         let mut info = MaybeUninit::<libc::proc_bsdinfo>::zeroed();
         let size = size_of::<libc::proc_bsdinfo>() as i32;
         // SAFETY: proc_pidinfo writes at most `size` bytes into `info`.
@@ -136,58 +134,53 @@ mod imp {
             )
         };
         if n != size {
-            return None;
+            let error = std::io::Error::last_os_error();
+            return if error.raw_os_error() == Some(libc::ESRCH) {
+                Ok(None)
+            } else {
+                Err(error)
+            };
         }
         // SAFETY: the call filled the whole struct.
         let i = unsafe { info.assume_init() };
         // sys/proc.h: SZOMB. A zombie cannot run or hold output pipes.
         if i.pbi_status == 5 {
-            return None;
+            return Ok(None);
         }
-        Some(Proc {
+        Ok(Some(Proc {
             pid,
             ppid: i.pbi_ppid as i32,
             pgid: i.pbi_pgid as i32,
             start: format!("{}.{:06}", i.pbi_start_tvsec, i.pbi_start_tvusec),
-        })
+        }))
     }
 
-    pub fn all_pids() -> Vec<i32> {
+    pub fn all_pids() -> std::io::Result<Vec<i32>> {
         // SAFETY: a null buffer asks for the number of processes.
         let n = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
         if n <= 0 {
-            return Vec::new();
+            return Err(std::io::Error::last_os_error());
         }
         let mut pids = vec![0i32; n as usize + 64];
         let bytes = (pids.len() * size_of::<i32>()) as i32;
         // SAFETY: the buffer holds `bytes` bytes.
         let n = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
-        pids.truncate(n.max(0) as usize);
-        pids
+        if n < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if n as usize >= pids.len() {
+            return Err(std::io::Error::other(
+                "process enumeration exceeded its buffer",
+            ));
+        }
+        pids.truncate(n as usize);
+        Ok(pids)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn retains_escaped_descendants_but_never_reused_pids() {
-        let process = |pid, ppid, pgid, start: &str| Proc {
-            pid,
-            ppid,
-            pgid,
-            start: start.into(),
-        };
-        let mut family = Family::default();
-        family.observe(10, &[process(10, 1, 10, "a"), process(11, 10, 11, "b")]);
-        family.observe(10, &[process(11, 1, 11, "b"), process(12, 11, 12, "c")]);
-        assert_eq!(family.members.len(), 2);
-        family.observe(10, &[process(11, 1, 11, "new"), process(12, 1, 12, "c")]);
-        assert_eq!(family.members.keys().copied().collect::<Vec<_>>(), [12]);
-        family.observe(10, &[]);
-        assert!(family.is_empty());
-    }
 
     #[test]
     fn recognizes_processes_by_start_time() {

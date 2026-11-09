@@ -43,6 +43,33 @@ impl Deadline {
     pub fn expired(&self) -> bool {
         self.remaining().is_some_and(|r| r.is_zero())
     }
+
+    /// Bounds a future with the same sleep-aware deadline as bounded waits.
+    /// Periodic checks also notice system sleep while an I/O future is idle.
+    pub async fn run<F: std::future::Future>(&self, future: F) -> std::io::Result<F::Output> {
+        tokio::pin!(future);
+        loop {
+            if self.expired() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "request deadline expired",
+                ));
+            }
+            let pause = self
+                .remaining()
+                .unwrap_or(Duration::from_secs(1))
+                .min(Duration::from_secs(1));
+            tokio::select! {
+                result = &mut future => return Ok(result),
+                _ = tokio::time::sleep(pause) => {}
+            }
+        }
+    }
+}
+
+/// Current time as an RFC 3339 string with milliseconds.
+pub fn now() -> String {
+    humantime::format_rfc3339_millis(std::time::SystemTime::now()).to_string()
 }
 
 #[cfg(test)]

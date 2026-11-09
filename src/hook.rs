@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 
 use crate::client;
 use crate::paths::Paths;
-use crate::store::Reminder;
+use crate::protocol::Reminder;
 
 /// How long a reminder waits for the request-file channel when the socket
 /// cannot be reached, so a stopped daemon delays the agent only briefly.

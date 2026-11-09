@@ -33,20 +33,30 @@ test('installed DSH runs native bash, resumes a pending turn and delivers comple
     const { createUserMessage } = require('@deepseek-ai/dsh-llm');
     const root = await mkdtemp(join(tmpdir(), 'ats-dsh-runtime-'));
     const binary = process.env.ATS_BINARY ?? fileURLToPath(new URL('../../../target/debug/ats', import.meta.url));
-    const prior = { ATS_HOME: process.env.ATS_HOME, ATS_JOB_ID: process.env.ATS_JOB_ID };
+    const prior = { ATS_HOME: process.env.ATS_HOME, ATS_JOB_ID: process.env.ATS_JOB_ID,
+      CODEX_THREAD_ID: process.env.CODEX_THREAD_ID };
     process.env.ATS_HOME = join(root, 'ats');
     delete process.env.ATS_JOB_ID;
+    process.env.CODEX_THREAD_ID = 'inherited-foreign-codex-session';
     const ctx = new Context();
     const daemon = spawn(binary, ['daemon'], { stdio: 'ignore' });
     t.after(async () => {
-      await ctx.fiber.dispose();
-      const exit = once(daemon, 'exit');
-      daemon.kill();
-      await exit;
-      for (const [key, value] of Object.entries(prior)) {
-        if (value === undefined) delete process.env[key]; else process.env[key] = value;
+      try {
+        await ctx.fiber.dispose();
+      } finally {
+        try {
+          if (daemon.exitCode === null && daemon.signalCode === null) {
+            const exit = once(daemon, 'exit');
+            daemon.kill();
+            await exit;
+          }
+        } finally {
+          for (const [key, value] of Object.entries(prior)) {
+            if (value === undefined) delete process.env[key]; else process.env[key] = value;
+          }
+          await rm(root, { recursive: true, force: true });
+        }
       }
-      await rm(root, { recursive: true, force: true });
     });
     const status = async () => JSON.parse((await execute(binary, ['status', '--json'])).stdout);
     for (let n = 0; ; n++) {
@@ -92,7 +102,7 @@ test('installed DSH runs native bash, resumes a pending turn and delivers comple
     });
     const loop = new AgentLoop(ctx, { agents: [], maxParallelToolCalls: { get: () => 10 } });
     await loop[Service.init]();
-    apply(ctx, { call: (event, input) => hook(binary, event, input) });
+    apply(ctx, { binary });
     const handle = await ctx.agents.create({ sessionId: 'session-11111111-2222-3333-4444-555555555555',
       agentOptions: { provider: 'scripted', model: 'scripted' }, meta: { cwd: root } });
     const turn = async () => {
@@ -101,6 +111,8 @@ test('installed DSH runs native bash, resumes a pending turn and delivers comple
     };
     await turn();
     assert.ok(submission);
+    const attributed = JSON.parse((await execute(binary, ['status', submission, '--json'])).stdout);
+    assert.equal(attributed.session_id, handle.agent.id, 'native DSH session must override inherited Codex session');
     assert.deepEqual(exits, [75, 0]);
     assert.equal(requests.length, 4);
     assert.match(JSON.stringify(requests[2].messages), /still running/);
@@ -114,5 +126,11 @@ test('installed DSH runs native bash, resumes a pending turn and delivers comple
     assert.match(JSON.stringify(requests[4].messages), /ended since your last turn/);
     const fresh = await hook(binary, 'user-prompt-submit', { session_id: handle.agent.id });
     assert.deepEqual(fresh, {});
+    assert.equal(handle.agent.session.snapshotEvents().filter((e) => e.type === 'turn/start').length, 2);
+    const completed = await status();
+    assert.equal(completed.length, 1);
+    assert.equal(completed[0].exit_code, 0);
+    t.diagnostic(JSON.stringify({ atsBinary: binary, bashExitCodes: exits, sessionOwned: true,
+      turns: 2, runningReminder: true, completionReminderConsumed: true, exitCode: 0 }));
     await handle.dispose();
   });

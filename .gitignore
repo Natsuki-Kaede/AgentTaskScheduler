@@ -4,3 +4,4 @@
 .DS_Store
 /target/
 /dist/
+/scripts/__pycache__/

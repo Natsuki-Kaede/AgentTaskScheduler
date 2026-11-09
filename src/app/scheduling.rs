@@ -6,10 +6,12 @@ use std::time::{Duration, SystemTime};
 
 use anyhow::Result;
 
-use crate::api::AppState;
+use super::App;
+use crate::domain::error::Conflict;
+use crate::domain::job::JobState;
+use crate::domain::resource::Verdict;
 use crate::procinfo;
-use crate::sched::{self, Capacity, Dep, Held, Round, Verdict, Waiting};
-use crate::store::Conflict;
+use crate::sched::{self, Capacity, Dep, Held, Round, Waiting};
 
 const ROUND_EVERY: Duration = Duration::from_secs(1);
 
@@ -18,7 +20,7 @@ fn seconds_between(rfc3339: &str, now: SystemTime) -> Option<f64> {
     Some(now.duration_since(at).unwrap_or_default().as_secs_f64())
 }
 
-pub async fn run(state: AppState) {
+pub async fn run(state: App) {
     let mut changes = state.changes.subscribe();
     while !state.stopping() {
         if let Err(e) = round(&state) {
@@ -29,7 +31,7 @@ pub async fn run(state: AppState) {
 }
 
 /// One round.
-pub(super) fn round(state: &AppState) -> Result<()> {
+pub(super) fn round(state: &App) -> Result<()> {
     let snapshot = state
         .measurements
         .lock()
@@ -106,10 +108,7 @@ pub(super) fn round(state: &AppState) -> Result<()> {
         admitting: state.admitting(),
     });
 
-    let states: HashMap<&str, &str> = queued
-        .iter()
-        .map(|q| (q.id.as_str(), q.state.as_str()))
-        .collect();
+    let states: HashMap<&str, JobState> = queued.iter().map(|q| (q.id.as_str(), q.state)).collect();
     let by_id: HashMap<&str, &Waiting> = waiting.iter().map(|w| (w.id.as_str(), w)).collect();
     let mut changed = false;
     let mut waiting_verdicts = HashMap::new();
@@ -133,16 +132,16 @@ pub(super) fn round(state: &AppState) -> Result<()> {
                     Err(e) => return Err(e),
                 }
             }
-            Verdict::Blocked { .. } if current != "blocked" => {
-                store.set_queue_state(&id, "blocked")?;
+            Verdict::Blocked { .. } if current != JobState::Blocked => {
+                store.set_queue_state(&id, crate::domain::job::JobState::Blocked)?;
                 changed = true;
             }
-            Verdict::CapacityInsufficient { .. } if current != "capacity_insufficient" => {
-                store.set_queue_state(&id, "capacity_insufficient")?;
+            Verdict::CapacityInsufficient { .. } if current != JobState::CapacityInsufficient => {
+                store.set_queue_state(&id, crate::domain::job::JobState::CapacityInsufficient)?;
                 changed = true;
             }
-            Verdict::Wait { .. } if current != "queued" => {
-                store.set_queue_state(&id, "queued")?;
+            Verdict::Wait { .. } if current != JobState::Queued => {
+                store.set_queue_state(&id, crate::domain::job::JobState::Queued)?;
                 changed = true;
             }
             _ => {}
@@ -159,13 +158,13 @@ pub(super) fn round(state: &AppState) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sample::{Snapshot, System};
+    use crate::domain::measurement::{Snapshot, System};
 
     const G: u64 = 1 << 30;
 
-    fn submit(state: &AppState, mem: u64, after: &[&str]) -> String {
-        use crate::sched::predict::Prediction;
-        use crate::store::{Entry, NewSubmission, Plan};
+    fn submit(state: &App, mem: u64, after: &[&str]) -> String {
+        use crate::domain::job::{Entry, NewSubmission, Plan};
+        use crate::domain::resource::Prediction;
         let new = NewSubmission {
             entry: Entry::Sh,
             command: "make".into(),
@@ -189,11 +188,11 @@ mod tests {
         job
     }
 
-    fn job_state(state: &AppState, job: &str) -> String {
-        state.store().job(job).unwrap().unwrap().state
+    fn job_state(state: &App, job: &str) -> String {
+        state.store().job(job).unwrap().unwrap().state.to_string()
     }
 
-    fn reason(state: &AppState, job: &str) -> sched::Reason {
+    fn reason(state: &App, job: &str) -> crate::domain::resource::Reason {
         match &state.verdicts.lock().unwrap()[job] {
             Verdict::Wait { reason } => reason.clone(),
             other => panic!("{other:?}"),
@@ -202,11 +201,12 @@ mod tests {
 
     #[test]
     fn rounds_admit_block_and_refuse() {
-        let state = AppState::new(
+        let state = App::new(
             crate::store::Store::open_in_memory().unwrap(),
             "t".into(),
             "i".into(),
         );
+        *state.observations.lock().unwrap() = Some(Default::default());
         *state.measurements.lock().unwrap() = Snapshot {
             system: Some(System {
                 mem_total: 16 * G,
@@ -250,12 +250,18 @@ mod tests {
             .mem_used = 13 * G;
         let b2 = submit(&state, G, &[]);
         round(&state).unwrap();
-        assert!(matches!(reason(&state, &b2), sched::Reason::Memory { .. }));
+        assert!(matches!(
+            reason(&state, &b2),
+            crate::domain::resource::Reason::Memory { .. }
+        ));
 
         // A failed predecessor blocks; the ended jobs leave room for b2.
         for job in [&a, &a2, &b] {
             let code = if job == &a { 1 } else { 0 };
-            state.store().finish(job, "completed", Some(code)).unwrap();
+            state
+                .store()
+                .finish(job, crate::domain::job::JobState::Completed, Some(code))
+                .unwrap();
         }
         let c = submit(&state, G, &[&a]);
         round(&state).unwrap();
@@ -265,16 +271,25 @@ mod tests {
         assert_eq!(job_state(&state, &c), "queued");
 
         // Pressure holds admission.
-        state.store().finish(&b2, "completed", Some(0)).unwrap();
+        state
+            .store()
+            .finish(&b2, crate::domain::job::JobState::Completed, Some(0))
+            .unwrap();
         state.pressure.lock().unwrap().pressured = true;
         round(&state).unwrap();
-        assert_eq!(reason(&state, &c), sched::Reason::Pressure);
+        assert_eq!(
+            reason(&state, &c),
+            crate::domain::resource::Reason::Pressure
+        );
         state.pressure.lock().unwrap().pressured = false;
 
         // While executors reconnect after a restart, nothing is admitted.
         state.expect_reconnects(["gone".to_string()].into(), Duration::from_secs(60));
         round(&state).unwrap();
-        assert_eq!(reason(&state, &c), sched::Reason::Recovering);
+        assert_eq!(
+            reason(&state, &c),
+            crate::domain::resource::Reason::Recovering
+        );
         state.contact("gone");
         round(&state).unwrap();
         assert_eq!(job_state(&state, &c), "admitted");

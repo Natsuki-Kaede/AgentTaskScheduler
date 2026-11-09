@@ -2,13 +2,9 @@
 //! scheduling round's inputs, so every rule can be tested with simulated
 //! resources.
 
-pub mod locks;
-pub mod predict;
 pub mod pressure;
 
-use serde::Serialize;
-
-use locks::Lock;
+use crate::domain::resource::Lock;
 
 /// Memory the machine offers this round.
 #[derive(Debug, Clone, PartialEq)]
@@ -68,46 +64,7 @@ pub struct Round<'a> {
     pub admitting: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum Reason {
-    Recovering,
-    Pressure,
-    NoExecutor,
-    Dependency {
-        job: String,
-    },
-    Lock {
-        resource: String,
-        holder: String,
-    },
-    Memory {
-        need: u64,
-        free: i64,
-    },
-    /// Would delay the job at the head of the queue.
-    Behind {
-        head: String,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(tag = "verdict", rename_all = "snake_case")]
-pub enum Verdict {
-    Admit,
-    Wait {
-        reason: Reason,
-    },
-    /// A predecessor failed; `ats unblock` or cancel decides.
-    Blocked {
-        job: String,
-    },
-    /// Its predicted peak exceeds the whole budget (design 5.1).
-    CapacityInsufficient {
-        need: u64,
-        budget: u64,
-    },
-}
+use crate::domain::resource::{Reason, Verdict};
 
 /// Waiting jobs in the order they are considered: those someone is
 /// waiting for first, then oldest first (design 10.3).

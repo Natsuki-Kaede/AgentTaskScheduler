@@ -32,6 +32,8 @@ ats install
 
 Homebrew works on macOS and Linux. Without Homebrew, download the archive for your machine from the [releases](https://github.com/Natsuki-Kaede/AgentTaskScheduler/releases), or install a Rust toolchain and use `cargo install --locked --git https://github.com/Natsuki-Kaede/AgentTaskScheduler`.
 
+Before replacing an existing installation, read the [upgrade and rollback notes](CHANGELOG.md#upgrade-notes).
+
 `ats install` shows each change as a diff. It writes nothing before you agree:
 
 - instructions for the model: `~/.claude/ats.md` with an `@ats.md` line in `~/.claude/CLAUDE.md`; for Codex, full guidance in `~/.codex/ATS.md` and a compact entrypoint in `~/.codex/AGENTS.md` that reads it for queued jobs or errors;
