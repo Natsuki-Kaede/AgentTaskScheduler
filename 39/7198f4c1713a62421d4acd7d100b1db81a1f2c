@@ -1,0 +1,19 @@
+src/app/pressure.rs
+  s_4c40f971a00b36::t_0b0765abe2fdf8 624-625,631,638-644
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "397198f4c1713a62421d4acd7d100b1db81a1f2c",
+  "prompts": {},
+  "sessions": {
+    "s_4c40f971a00b36": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1b517-6f8f-7030-b802-da0f55dc5e93",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Natsuki-Kaede <i@pari.network>"
+    }
+  }
+}
