@@ -1,0 +1,23 @@
+CHANGELOG.md
+  s_5a32b40ee587fd::t_3779dcc82b0302 3-31
+Cargo.toml
+  s_5a32b40ee587fd::t_3779dcc82b0302 3
+Cargo.lock
+  s_5a32b40ee587fd::t_38bb60feb1deee 7
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5705b0a26a282af5274a4890d5b323af1ad989b6",
+  "prompts": {},
+  "sessions": {
+    "s_5a32b40ee587fd": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1c94c-46e0-76a3-ad09-080eba1b1267",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Natsuki-Kaede <i@pari.network>"
+    }
+  }
+}
