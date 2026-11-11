@@ -621,18 +621,27 @@ mod inherited_tests {
         let dir = tempfile::tempdir().unwrap();
         let flag = dir.path().join("fork");
         let marker = dir.path().join("child.pid");
-        let script = "import os,pathlib,sys,time\nflag=pathlib.Path(sys.argv[1]); marker=pathlib.Path(sys.argv[2])\nwhile not flag.exists(): time.sleep(.02)\npid=os.fork()\nif pid==0:\n time.sleep(60); os._exit(0)\nmarker.write_text(str(pid))\ntime.sleep(60)";
+        let ready = dir.path().join("ready");
+        let script = "import os,pathlib,sys,time\nflag=pathlib.Path(sys.argv[1]); marker=pathlib.Path(sys.argv[2]); pathlib.Path(sys.argv[3]).touch()\nwhile not flag.exists(): time.sleep(.02)\npid=os.fork()\nif pid==0:\n time.sleep(60); os._exit(0)\nmarker.write_text(str(pid))\ntime.sleep(60)";
         let parent = Command::new("python3")
             .arg("-c")
             .arg(script)
             .arg(&flag)
             .arg(&marker)
+            .arg(&ready)
             .spawn()
             .unwrap();
         let mut owned = Owned {
             parent,
             child: None,
         };
+        // Runtime startup can reset background policy. Apply it only after
+        // Python has finished starting and is waiting for the fork signal.
+        let started = Instant::now();
+        while !ready.exists() {
+            assert!(started.elapsed() < Duration::from_secs(5));
+            std::thread::sleep(Duration::from_millis(20));
+        }
         let pid = owned.parent.id() as i32;
         assert!(crate::control::set_background(pid, false));
         let baseline = priority(pid);
