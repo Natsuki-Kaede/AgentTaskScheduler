@@ -4,7 +4,7 @@
 
 pub mod pressure;
 
-use crate::domain::resource::Lock;
+use crate::domain::resource::{Lock, MemoryScope};
 
 /// Memory the machine offers this round.
 #[derive(Debug, Clone, PartialEq)]
@@ -26,6 +26,8 @@ pub struct Held {
     pub locks: Vec<Lock>,
     /// Predicted seconds until it ends, when known.
     pub ends_in: Option<f64>,
+    /// Scope id and the job's measured resident bytes in that scope.
+    pub scopes: Vec<(String, u64)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,6 +54,8 @@ pub struct Waiting {
     pub ready: bool,
     /// Someone is waiting for it (a bounded wait or `ats wait`).
     pub awaited: bool,
+    /// None means the executor's resource domain could not be read safely.
+    pub scopes: Option<Vec<MemoryScope>>,
 }
 
 pub struct Round<'a> {
@@ -117,6 +121,7 @@ pub fn decide(r: &Round) -> Vec<(String, Verdict)> {
         .flat_map(|h| h.locks.iter().map(|l| (l.clone(), h.id.clone())))
         .collect();
     let mut admitted_ends: Vec<(f64, u64)> = Vec::new();
+    let mut admitted_scopes: Vec<(Vec<String>, u64)> = Vec::new();
     // The first job held back by memory, when it could start, and its
     // locks; later jobs must not delay it.
     let mut head: Option<(String, Option<f64>, Vec<Lock>)> = None;
@@ -131,10 +136,16 @@ pub fn decide(r: &Round) -> Vec<(String, Verdict)> {
             if let Some((job, _)) = w.deps.iter().find(|(_, d)| *d == Dep::Pending) {
                 return wait(Reason::Dependency { job: job.clone() });
             }
-            if w.reserved > c.memory && !w.now {
+            let budget = w
+                .scopes
+                .iter()
+                .flatten()
+                .map(|s| s.memory)
+                .fold(c.memory, u64::min);
+            if w.reserved > budget && !w.now {
                 return Verdict::CapacityInsufficient {
                     need: w.reserved,
-                    budget: c.memory,
+                    budget,
                 };
             }
             if !r.admitting {
@@ -155,6 +166,9 @@ pub fn decide(r: &Round) -> Vec<(String, Verdict)> {
             if w.now {
                 return Verdict::Admit;
             }
+            let Some(scopes) = &w.scopes else {
+                return wait(Reason::ResourceUnavailable);
+            };
             if r.pressure {
                 return wait(Reason::Pressure);
             }
@@ -172,23 +186,51 @@ pub fn decide(r: &Round) -> Vec<(String, Verdict)> {
             }
             // With no managed job holding memory, waiting cannot free any
             // that ats controls: the first job always starts (design 10.1).
+            let scope_free = scopes
+                .iter()
+                .map(|scope| {
+                    let pending: u64 = r
+                        .held
+                        .iter()
+                        .filter_map(|held| {
+                            held.scopes
+                                .iter()
+                                .find(|(id, _)| id == &scope.id)
+                                .map(|(_, resident)| held.reserved.saturating_sub(*resident))
+                        })
+                        .sum();
+                    let admitted: u64 = admitted_scopes
+                        .iter()
+                        .filter(|(ids, _)| ids.contains(&scope.id))
+                        .map(|(_, memory)| memory)
+                        .sum();
+                    scope.memory as i64 - scope.used as i64 - pending as i64 - admitted as i64
+                })
+                .min()
+                .unwrap_or(i64::MAX);
+            let available = free.min(scope_free);
             let idle = r.held.is_empty() && admitted_ends.is_empty();
-            if w.reserved as i64 <= free || idle {
+            // The idle escape hatch cannot override a kernel-enforced cgroup budget.
+            if w.reserved as i64 <= available || (idle && w.reserved as i64 <= scope_free) {
                 return Verdict::Admit;
             }
             if head.is_none() {
-                let eta = head_eta(r.held, &admitted_ends, w.reserved as i64 - free);
+                let eta = head_eta(r.held, &admitted_ends, w.reserved as i64 - available);
                 head = Some((w.id.clone(), eta, w.locks.clone()));
             }
             wait(Reason::Memory {
                 need: w.reserved,
-                free,
+                free: available,
             })
         })();
         if verdict == Verdict::Admit {
             free -= w.reserved as i64;
             locks.extend(w.locks.iter().map(|l| (l.clone(), w.id.clone())));
             admitted_ends.push((w.seconds.unwrap_or(f64::INFINITY), w.reserved));
+            admitted_scopes.push((
+                w.scopes.iter().flatten().map(|s| s.id.clone()).collect(),
+                w.reserved,
+            ));
         }
         out.push((w.id.clone(), verdict));
     }

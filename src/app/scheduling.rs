@@ -37,9 +37,13 @@ pub(super) fn round(state: &App) -> Result<()> {
         .lock()
         .expect("measurements lock")
         .clone();
-    let (queued, held_jobs) = {
+    let (queued, held_jobs, active_jobs) = {
         let store = state.store();
-        (store.queued_jobs()?, store.held_jobs()?)
+        (
+            store.queued_jobs()?,
+            store.held_jobs()?,
+            store.active_jobs()?,
+        )
     };
     if queued.is_empty() {
         state.verdicts.lock().expect("verdicts lock").clear();
@@ -55,19 +59,36 @@ pub(super) fn round(state: &App) -> Result<()> {
     };
     let wall = SystemTime::now();
     let seconds_since = |at: &str| seconds_between(at, wall);
+    let observation = state
+        .observations
+        .lock()
+        .expect("observations lock")
+        .clone();
     let held: Vec<Held> = held_jobs
         .iter()
-        .map(|h| Held {
-            id: h.id.clone(),
-            reserved: h.reserved_private,
-            resident: snapshot.jobs.get(&h.id).map_or(0, |u| u.private_resident),
-            locks: h.locks.clone(),
-            ends_in: h
-                .predicted_seconds
-                .zip(h.started_at.as_deref().and_then(seconds_since))
-                .map(|(total, ran)| (total - ran).max(0.0)),
+        .map(|h| {
+            Ok(Held {
+                id: h.id.clone(),
+                reserved: h.reserved_private,
+                resident: snapshot.jobs.get(&h.id).map_or(0, |u| u.private_resident),
+                locks: h.locks.clone(),
+                ends_in: h
+                    .predicted_seconds
+                    .zip(h.started_at.as_deref().and_then(seconds_since))
+                    .map(|(total, ran)| (total - ran).max(0.0)),
+                scopes: super::capacity::held(
+                    active_jobs
+                        .iter()
+                        .find(|job| job.id == h.id)
+                        .and_then(|job| job.executor.as_ref()),
+                    observation
+                        .as_ref()
+                        .and_then(|o| o.members.get(&h.id))
+                        .map_or(&[], Vec::as_slice),
+                )?,
+            })
         })
-        .collect();
+        .collect::<Result<_>>()?;
     let awaited = state.awaited_jobs();
     let waiting: Vec<Waiting> = queued
         .iter()
@@ -97,6 +118,7 @@ pub(super) fn round(state: &App) -> Result<()> {
                 .as_ref()
                 .is_some_and(|(pid, start)| procinfo::alive(*pid as i32, start)),
             awaited: awaited.contains(&q.id),
+            scopes: super::capacity::waiting(q.executor.as_ref()),
         })
         .collect();
 

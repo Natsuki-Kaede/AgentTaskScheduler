@@ -1,4 +1,4 @@
-//! Measured history for prediction (design 8.3): completed jobs from the
+//! Measured history for prediction (design 8.3): successful jobs from the
 //! last 90 days, most recent first.
 
 use std::time::SystemTime;
@@ -31,7 +31,7 @@ impl Store {
         let since = humantime::format_rfc3339_millis(SystemTime::now() - super::KEEP).to_string();
         let mut stmt = self.conn.prepare_cached(
             "SELECT peak_private, started_at, ended_at FROM jobs
-             WHERE state = 'completed' AND ended_at >= ?1
+             WHERE state = 'completed' AND exit_code = 0 AND ended_at >= ?1
                AND (?2 IS NULL OR project_root = ?2)
                AND (?3 IS NULL OR command = ?3)
                AND (?4 IS NULL OR history_key = ?4)
@@ -154,5 +154,42 @@ mod tests {
             history(&store, Some("/c"), None, Some("make")).unwrap().mem,
             Some(60)
         );
+    }
+    #[test]
+    fn early_failures_do_not_replace_profile_or_successful_history() {
+        let mut store = Store::open_in_memory().unwrap();
+        run(
+            &mut store,
+            "/a",
+            "cargo build",
+            "cargo build",
+            100,
+            "completed",
+        );
+        store
+            .conn
+            .execute("UPDATE jobs SET exit_code = 2", [])
+            .unwrap();
+        for (project, command, key) in [
+            (Some("/a"), Some("cargo build"), None),
+            (Some("/a"), None, Some("cargo build")),
+            (None, None, Some("cargo build")),
+        ] {
+            assert_eq!(
+                history(&store, project, command, key).unwrap(),
+                Stats::default()
+            );
+        }
+        run(
+            &mut store,
+            "/a",
+            "cargo build",
+            "cargo build",
+            4096,
+            "completed",
+        );
+        let stats = history(&store, Some("/a"), Some("cargo build"), None).unwrap();
+        assert_eq!(stats.samples, 1);
+        assert_eq!(stats.mem, Some((4096.0 * 1.3) as u64));
     }
 }

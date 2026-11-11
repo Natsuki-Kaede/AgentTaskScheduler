@@ -20,6 +20,7 @@ fn job(id: &str, age: f64, mem: u64) -> Waiting {
         now: false,
         ready: true,
         awaited: false,
+        scopes: Some(Vec::new()),
     }
 }
 
@@ -30,6 +31,7 @@ fn held(id: &str, reserved: u64, resident: u64) -> Held {
         resident,
         locks: Vec::new(),
         ends_in: None,
+        scopes: Vec::new(),
     }
 }
 
@@ -72,6 +74,58 @@ fn headroom_follows_the_formula() {
         headroom(&cap(6 * G), &[a, over]),
         (16 - 6 - 3) as i64 * G as i64
     );
+}
+
+#[test]
+fn execution_scopes_limit_idle_jobs_and_share_pending_reservations() {
+    let scope = |id: &str, memory, used| MemoryScope {
+        id: id.into(),
+        memory,
+        used,
+    };
+    let mut a = job("a", 10.0, 3 * G);
+    a.scopes = Some(vec![scope("parent", 4 * G, 2 * G)]);
+    assert!(matches!(
+        verdict(&run(&cap(0), &[], &[a.clone()]), "a"),
+        Verdict::Wait {
+            reason: Reason::Memory { .. }
+        }
+    ));
+    a.reserved = 5 * G;
+    assert_eq!(
+        verdict(&run(&cap(0), &[], &[a.clone()]), "a"),
+        &Verdict::CapacityInsufficient {
+            need: 5 * G,
+            budget: 4 * G
+        }
+    );
+    a.reserved = 2 * G;
+    a.scopes = None;
+    assert_eq!(
+        verdict(&run(&cap(0), &[], &[a.clone()]), "a"),
+        &Verdict::Wait {
+            reason: Reason::ResourceUnavailable
+        }
+    );
+
+    a.scopes = Some(vec![scope("parent", 4 * G, G), scope("a", 3 * G, 0)]);
+    let mut b = job("b", 9.0, 2 * G);
+    b.scopes = Some(vec![scope("parent", 4 * G, G), scope("b", 3 * G, 0)]);
+    // Sibling leaf groups still contend for their common parent.
+    assert_eq!(admitted(&run(&cap(0), &[], &[a.clone(), b])), ["a"]);
+    let mut running = held("running", 2 * G, G);
+    running.scopes = vec![("parent".into(), G)];
+    a.reserved = 3 * G;
+    assert!(admitted(&run(&cap(0), &[running.clone()], &[a.clone()])).is_empty());
+    a.reserved = 2 * G;
+    assert_eq!(
+        admitted(&run(&cap(0), &[running.clone()], &[a.clone()])),
+        ["a"]
+    );
+    // Unrelated execution groups must not consume each other's reservations.
+    running.scopes = vec![("elsewhere".into(), G)];
+    a.reserved = 3 * G;
+    assert_eq!(admitted(&run(&cap(0), &[running], &[a])), ["a"]);
 }
 
 #[test]

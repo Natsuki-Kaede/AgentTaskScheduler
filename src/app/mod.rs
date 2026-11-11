@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+mod capacity;
 mod jobs;
 pub(crate) mod monitor;
 pub(crate) mod pressure;

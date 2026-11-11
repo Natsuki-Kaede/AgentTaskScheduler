@@ -246,15 +246,15 @@ pub async fn run(
         return blocked(paths, &sub).await;
     }
     if reached {
+        if sub.job_state.terminal() {
+            print_output(&sub)?;
+            delivered(paths, &sub).await;
+            return Ok(terminal_exit_code(&sub));
+        }
         if let Some(code) = sub.main_exit_code {
             print_output(&sub)?;
             delivered(paths, &sub).await;
             return Ok(exit_code(code));
-        }
-        if sub.job_state == JobState::StartFailed {
-            print_output(&sub)?;
-            delivered(paths, &sub).await;
-            return Ok(exit_code(sub.exit_code.unwrap_or(127)));
         }
     }
     eprintln!("{}", status_line(&sub));
@@ -280,15 +280,21 @@ fn terminal_line(sub: &Submission) -> String {
 
 /// Reports a submission's terminal state and attaches log tails on
 /// failure (design 5.4).
+fn terminal_exit_code(sub: &Submission) -> ExitCode {
+    match sub.job_state {
+        JobState::Completed => exit_code(sub.exit_code.unwrap_or(1)),
+        JobState::StartFailed => exit_code(sub.exit_code.unwrap_or(127)),
+        // A successful main process does not make canceled remaining work successful.
+        _ => exit_code(sub.exit_code.filter(|code| *code != 0).unwrap_or(1)),
+    }
+}
+
 fn report_terminal(sub: &Submission) -> ExitCode {
     eprintln!("{}", terminal_line(sub));
     if failed(sub) {
         print_tails(sub.log_path.as_deref());
     }
-    match sub.exit_code {
-        Some(code) => exit_code(code),
-        None => ExitCode::from(1),
-    }
+    terminal_exit_code(sub)
 }
 
 /// Reports a job held back by a failed predecessor (design 5.4: 76).
@@ -320,10 +326,7 @@ pub async fn wait(paths: &Paths, submission: &str, wait: Option<Duration>) -> Re
         print_output(&sub)?;
         eprintln!("{}", terminal_line(&sub));
         delivered(paths, &sub).await;
-        return Ok(match sub.exit_code {
-            Some(code) => exit_code(code),
-            None => ExitCode::from(1),
-        });
+        return Ok(terminal_exit_code(&sub));
     }
     eprintln!("{}", status_line(&sub));
     Ok(ExitCode::from(EXIT_DETACHED))
@@ -435,6 +438,10 @@ fn explain(v: &Verdict) -> String {
         Verdict::Wait { reason } => match reason {
             Reason::Recovering => {
                 "the daemon restarted and is waiting for running jobs to reconnect".into()
+            }
+            Reason::ResourceUnavailable => {
+                "its execution memory limits could not be read; waiting for a fresh observation"
+                    .into()
             }
             Reason::Pressure => "memory pressure is rising, so nothing new is admitted".into(),
             Reason::NoExecutor => "its executor has not registered yet".into(),

@@ -571,3 +571,32 @@ fn retained_finish(cancel: bool) {
     }
     drop(daemon);
 }
+
+#[test]
+fn canceled_descendants_do_not_return_the_successful_main_exit_code() {
+    let home = Home::new();
+    let _daemon = home.daemon();
+    let (submission, job) = submit_with_options(
+        &home,
+        "sleep 20 >/dev/null 2>&1 & sleep 0.2; exit 0",
+        &["--lock", "cancel-result"],
+    );
+    wait_until(
+        "main result while descendants run",
+        Duration::from_secs(10),
+        || {
+            let row = home.job(&job);
+            row["main_exit_code"] == 0 && row["state"] == "running"
+        },
+    );
+    assert!(home.ats(&["cancel", &submission]).status.success());
+    let result = home.ats(&["wait", &submission, "--wait", "10s"]);
+    assert_eq!(home.job(&job)["state"], "canceled");
+    assert_eq!(home.job(&job)["main_exit_code"], 0);
+    assert_eq!(
+        result.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+}

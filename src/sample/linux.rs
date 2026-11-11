@@ -25,16 +25,6 @@ fn read(path: impl AsRef<Path>) -> Option<String> {
     std::fs::read_to_string(path).ok()
 }
 
-/// The memory limit and use of the cgroup at the root of this cgroup
-/// namespace, when one is set: a container's limit.
-fn cgroup() -> Option<(u64, u64)> {
-    let root = Path::new("/sys/fs/cgroup");
-    let limit = read(root.join("memory.max"))?.trim().parse().ok()?;
-    let current: u64 = read(root.join("memory.current"))?.trim().parse().ok()?;
-    let inactive_file = stat(&read(root.join("memory.stat"))?, "inactive_file").unwrap_or(0);
-    Some((limit, current.saturating_sub(inactive_file)))
-}
-
 /// 4 (critical) while tasks stall on memory, all at once, for 10% of the
 /// last 10 seconds; 1 otherwise or without pressure stall information.
 fn pressure() -> u8 {
@@ -61,16 +51,14 @@ pub fn system() -> Option<System> {
     let meminfo = read("/proc/meminfo")?;
     let total = field(&meminfo, "MemTotal")? * 1024;
     let used = total.saturating_sub(field(&meminfo, "MemAvailable")? * 1024);
-    let (mem_total, mem_used) = match cgroup() {
-        Some((limit, used)) if limit < total => (limit, used),
-        _ => (total, used),
-    };
     let swapped = read("/proc/vmstat")
         .and_then(|t| stat(&t, "pswpout"))
         .unwrap_or(0);
     Some(System {
-        mem_total,
-        mem_used,
+        // Execution cgroups are checked separately per executor at admission.
+        // The daemon's own cgroup is not necessarily the command's resource domain.
+        mem_total: total,
+        mem_used: used,
         pressure: pressure(),
         swap_out_bytes: swapped * page_size(),
         cores: super::cores(),

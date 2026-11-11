@@ -47,6 +47,14 @@ pub struct Prediction {
     pub seconds: Option<f64>,
 }
 
+/// A finite memory budget shared by processes in one execution cgroup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryScope {
+    pub id: String,
+    pub memory: u64,
+    pub used: u64,
+}
+
 /// What an executor is given with its lease (design 10.5).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -62,6 +70,7 @@ pub struct LeaseTerms {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Reason {
     Recovering,
+    ResourceUnavailable,
     Pressure,
     NoExecutor,
     Dependency {

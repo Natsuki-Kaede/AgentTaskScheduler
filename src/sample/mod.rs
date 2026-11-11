@@ -3,6 +3,9 @@
 //! a few milliseconds (a region walk on macOS) and run every five seconds
 //! and for new processes.
 
+#[cfg(any(target_os = "linux", test))]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod cgroup;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
@@ -21,6 +24,14 @@ use crate::procinfo;
 use crate::timing;
 
 pub use os::system;
+
+#[cfg(target_os = "linux")]
+pub use cgroup::memory_scopes;
+
+#[cfg(target_os = "linux")]
+pub fn process_memory(pid: i32) -> Option<Memory> {
+    os::memory(pid)
+}
 
 pub use crate::domain::measurement::{JobUsage, Memory, Snapshot, System};
 

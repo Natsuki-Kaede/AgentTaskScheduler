@@ -76,6 +76,40 @@ pub fn project_root(dir: &Path) -> PathBuf {
         .to_path_buf()
 }
 
+/// Cargo members share the workspace output directory even when invoked inside
+/// a member. Explicit command-line paths take precedence over that default.
+fn cargo_target(argv: &[String], cwd: &Path) -> PathBuf {
+    let value = |flag: &str| {
+        argv.iter().enumerate().find_map(|(i, arg)| {
+            arg.strip_prefix(&format!("{flag}="))
+                .map(str::to_string)
+                .or_else(|| (arg == flag).then(|| argv.get(i + 1).cloned()).flatten())
+        })
+    };
+    if let Some(target) = value("--target-dir") {
+        return cwd.join(target);
+    }
+    let manifest = value("--manifest-path")
+        .map(|path| cwd.join(path))
+        .unwrap_or_else(|| project_root(cwd).join("Cargo.toml"));
+    let package = manifest.parent().unwrap_or(cwd);
+    let read =
+        |path: &Path| toml::from_str::<toml::Value>(&std::fs::read_to_string(path).ok()?).ok();
+    if let Some(workspace) = read(&manifest).and_then(|doc| {
+        doc.get("package")?
+            .get("workspace")?
+            .as_str()
+            .map(str::to_string)
+    }) {
+        return package.join(workspace).join("target");
+    }
+    let root = package
+        .ancestors()
+        .find(|dir| read(&dir.join("Cargo.toml")).is_some_and(|doc| doc.get("workspace").is_some()))
+        .unwrap_or(package);
+    root.join("target")
+}
+
 /// The locks a command line needs: each command's write scope from its
 /// profile, files written by redirections, and the extra `--lock` values.
 /// Commands without a profile take no lock.
@@ -103,7 +137,12 @@ pub fn for_line(
                     .map(|p| p.write_paths.as_slice())
                     .unwrap_or_default()
                 {
-                    locks.push(path(&root.join(p)));
+                    let target = if s.tool.as_deref() == Some("cargo") && p == "target" {
+                        cargo_target(&s.argv, &s.cwd)
+                    } else {
+                        root.join(p)
+                    };
+                    locks.push(path(&target));
                 }
             }
             Writes::Project => locks.push(path(&project_root(&s.cwd))),
@@ -247,5 +286,41 @@ mod tests {
         };
         let (a, b) = (lock("a"), lock("b"));
         assert!(!a[0].conflicts(&b[0]), "{a:?} {b:?}");
+    }
+    #[test]
+    fn cargo_workspace_members_lock_the_shared_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"a\", \"b\"]\n",
+        )
+        .unwrap();
+        let profiles = Profiles::builtin();
+        let r = Recognizer::new(&profiles, &[]);
+        for member in ["a", "b"] {
+            let cwd = root.join(member);
+            std::fs::create_dir(&cwd).unwrap();
+            std::fs::write(
+                cwd.join("Cargo.toml"),
+                format!("[package]\nname = {member:?}\nversion = \"0.1.0\"\n"),
+            )
+            .unwrap();
+            for (command, expected) in [
+                ("cargo build", root.join("target")),
+                ("cargo test --target-dir ../shared", root.join("shared")),
+                ("cargo check --target-dir=../shared", root.join("shared")),
+            ] {
+                let locks = for_line(&r.shell(command, &cwd), &cwd, &profiles, &[]);
+                assert_eq!(locks, [path(&expected)], "{member}: {command}");
+            }
+        }
+        let locks = for_line(
+            &r.shell("cargo build --manifest-path a/Cargo.toml", root),
+            root,
+            &profiles,
+            &[],
+        );
+        assert_eq!(locks, [path(&root.join("target"))]);
     }
 }

@@ -20,9 +20,15 @@ fn looks_secret(name: &str) -> bool {
 /// Replaces the value of `NAME=value`, `--name=value` and `--name value`
 /// words whose name looks like a secret, and the word after `Bearer`.
 pub fn command_words(words: &[String]) -> Vec<String> {
+    redact_words(words, 0)
+}
+
+fn redact_words(words: &[String], depth: usize) -> Vec<String> {
+    let mut words = words.to_vec();
+    redact_shell_arguments(&mut words, depth);
     let mut out = Vec::with_capacity(words.len());
     let mut hide_next = false;
-    for word in words {
+    for word in &words {
         if hide_next {
             out.push("[redacted]".to_string());
             hide_next = false;
@@ -52,6 +58,44 @@ pub fn command_words(words: &[String]) -> Vec<String> {
     out
 }
 
+/// Shell command strings remain one argv word after outer quote removal.
+/// Redact them before applying ordinary flag/value rules, including wrappers.
+fn redact_shell_arguments(words: &mut [String], depth: usize) {
+    for index in 0..words.len() {
+        let program = words[index]
+            .rsplit([';', '&', '|', '(', ')'])
+            .next()
+            .unwrap_or_default();
+        let program = std::path::Path::new(program)
+            .file_name()
+            .and_then(|name| name.to_str());
+        if !program.is_some_and(|p| ["sh", "bash", "zsh", "dash", "ksh"].contains(&p)) {
+            continue;
+        }
+        let mut next = index + 1;
+        while let Some(flag) = words.get(next) {
+            if flag == "--" || !flag.starts_with('-') {
+                break;
+            }
+            if flag == "--command" || (!flag.starts_with("--") && flag.contains('c')) {
+                if let Some(source) = words.get_mut(next + 1) {
+                    *source = shell_source_at(source, depth + 1);
+                }
+                break;
+            }
+            if let Some(source) = flag.strip_prefix("--command=") {
+                words[next] = format!("--command={}", shell_source_at(source, depth + 1));
+                break;
+            }
+            next += if ["-o", "-O", "--rcfile", "--init-file"].contains(&flag.as_str()) {
+                2
+            } else {
+                1
+            };
+        }
+    }
+}
+
 fn redact_header(word: &str) -> Option<String> {
     let (prefix, header) = if let Some(header) = word.strip_prefix("--header=") {
         ("--header=", header)
@@ -71,8 +115,15 @@ fn redact_header(word: &str) -> Option<String> {
 /// Unclosed quotes have no reliable word boundary, so none of that source
 /// is stored. The result is for display only.
 pub fn shell_source(source: &str) -> String {
+    shell_source_at(source, 0)
+}
+
+fn shell_source_at(source: &str, depth: usize) -> String {
+    if depth >= 8 {
+        return "[redacted: nested shell source]".into();
+    }
     match shlex::split(source) {
-        Some(words) => command_words(&words).join(" "),
+        Some(words) => redact_words(&words, depth).join(" "),
         None => "[redacted: unparsed shell source]".into(),
     }
 }
@@ -175,6 +226,47 @@ mod tests {
         assert_eq!(
             command_words(&["Accept: application/json".into()]),
             ["Accept: application/json"]
+        );
+    }
+}
+
+#[cfg(test)]
+mod nested_tests {
+    use super::*;
+
+    #[test]
+    fn nested_shell_secrets_are_redacted_in_both_entry_forms() {
+        for shell in ["sh", "/bin/bash", "zsh", "dash", "ksh"] {
+            for flags in [vec!["-c"], vec!["-lc"], vec!["-o", "errexit", "-c"]] {
+                let mut words = vec!["env".to_string(), shell.into()];
+                words.extend(flags.into_iter().map(str::to_string));
+                words.push("curl --token PRIVATE_TEST_VALUE https://example.invalid".into());
+                let source = words
+                    .iter()
+                    .map(|w| crate::hook::quote(w))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                for redacted in [command_words(&words).join(" "), shell_source(&source)] {
+                    assert!(!redacted.contains("PRIVATE_TEST_VALUE"), "{redacted}");
+                    assert!(redacted.contains("[redacted]"), "{redacted}");
+                }
+            }
+        }
+        assert!(
+            !shell_source("echo ready;sh -c 'tool --token PRIVATE_TEST_VALUE'")
+                .contains("PRIVATE_TEST_VALUE")
+        );
+        let source = r#"bash -c "sh -c 'tool --password PRIVATE_TEST_VALUE'""#;
+        assert!(!shell_source(source).contains("PRIVATE_TEST_VALUE"));
+        let words = vec![
+            "bash".into(),
+            "-c".into(),
+            "tool --token 'PRIVATE_TEST_VALUE".into(),
+        ];
+        assert!(
+            !command_words(&words)
+                .join(" ")
+                .contains("PRIVATE_TEST_VALUE")
         );
     }
 }
