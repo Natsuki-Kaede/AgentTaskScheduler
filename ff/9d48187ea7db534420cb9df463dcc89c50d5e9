@@ -1,0 +1,24 @@
+src/control.rs
+  s_5a32b40ee587fd::t_83b24cd7f8d82f 33-34,38-39,45-57,65,69
+  s_5a32b40ee587fd::t_7ec744922bb971 36,40-42,44,58-64,66-68,70-71,83,85,87
+  s_5a32b40ee587fd::t_086a3855a6e987 37,43
+  s_5a32b40ee587fd::t_06c88417cecaf0 35
+src/app/pressure.rs
+  s_5a32b40ee587fd::t_7ec744922bb971 555,589,595,652,667,686,688
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ff9d48187ea7db534420cb9df463dcc89c50d5e9",
+  "prompts": {},
+  "sessions": {
+    "s_5a32b40ee587fd": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1c94c-46e0-76a3-ad09-080eba1b1267",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Natsuki-Kaede <i@pari.network>"
+    }
+  }
+}
