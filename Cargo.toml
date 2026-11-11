@@ -1,6 +1,6 @@
 [package]
 name = "agent-task-scheduler"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 description = "Local scheduler that queues resource-heavy commands from AI agents and admits them by machine capacity"
 license = "GPL-3.0-only"

@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.1.4 - 2026-11-11
+
+### Fixed
+
+- Redact sensitive arguments inside nested shell command strings, with bounded
+  recursion and conservative display text for unparseable source.
+- Return a nonzero terminal CLI result for canceled work even when its main
+  process previously exited successfully.
+- Apply the executor's visible cgroup v2 memory limits and ancestor budgets on
+  Linux, accounting for reservations shared by sibling groups. Wait when the
+  execution resource domain cannot be observed safely.
+- Exclude failed commands from the history used to predict resource demand.
+- Derive Cargo output locks from workspace roots and explicit manifest or target
+  directory arguments, including explicit package workspace paths.
+- Synchronize macOS QoS test startup and inspect base thread priority instead
+  of dynamic scheduler priority, including inherited policy after fork.
+
+### Compatibility and limits
+
+The database remains at schema 5. Existing task data does not need a new schema
+migration when upgrading from 0.1.3. Upgrade while no jobs are active and QoS
+restoration has settled.
+
+Linux resource-domain checks require visible cgroup v2 membership and mounts;
+cgroup v1 and hidden ancestor limits are not covered. These admission checks do
+not impose per-job hard memory limits. Cargo target-directory overrides through
+environment variables or Cargo configuration are not fully resolved; use an
+explicit `--target-dir` or `--lock` for those shared output directories.
+
 ## 0.1.3 - 2026-11-09
 
 ### Fixed
