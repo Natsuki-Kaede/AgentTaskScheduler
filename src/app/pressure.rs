@@ -552,18 +552,7 @@ mod inherited_tests {
             let _ = self.parent.wait();
         }
     }
-    fn priority(pid: i32) -> String {
-        String::from_utf8(
-            Command::new("ps")
-                .args(["-o", "pri=", "-p", &pid.to_string()])
-                .output()
-                .unwrap()
-                .stdout,
-        )
-        .unwrap()
-        .trim()
-        .into()
-    }
+    use crate::control::test_priority as priority;
 
     #[test]
     fn background_batch_restores_all_processes_and_records_latency() {
@@ -597,13 +586,13 @@ mod inherited_tests {
         response.apply(&store, &members, true, &SystemQos).unwrap();
         let background = started.elapsed();
         for identity in &identities {
-            assert_eq!(priority(identity.pid), "4");
+            assert_eq!(priority(identity.pid), 4);
         }
         let started = Instant::now();
         response.apply(&store, &members, false, &SystemQos).unwrap();
         let restored = started.elapsed();
         for identity in &identities {
-            assert_ne!(priority(identity.pid), "4");
+            assert_ne!(priority(identity.pid), 4);
         }
         assert!(store.background_obligations().unwrap().is_empty());
         response.apply(&store, &members, false, &SystemQos).unwrap();
@@ -660,7 +649,7 @@ mod inherited_tests {
                 &SystemQos,
             )
             .unwrap();
-        assert_eq!(priority(pid), "4");
+        assert_eq!(priority(pid), 4);
         std::fs::write(&flag, "fork").unwrap();
         let started = Instant::now();
         let child = loop {
@@ -675,7 +664,7 @@ mod inherited_tests {
         owned.child = Some(child);
         let inherited = priority(child);
         assert_eq!(
-            inherited, "4",
+            inherited, 4,
             "the test child must inherit its parent's background policy"
         );
         let child_identity = ProcessIdentity {
@@ -694,9 +683,9 @@ mod inherited_tests {
             priority(pid),
             store.background_processes().unwrap()
         );
-        assert_ne!(priority(pid), "4");
+        assert_ne!(priority(pid), 4);
         assert_ne!(
-            after, "4",
+            after, 4,
             "a newly confirmed child must not retain inherited background QoS after pressure subsides"
         );
         assert_eq!(store.background_jobs().unwrap(), ["j"]);

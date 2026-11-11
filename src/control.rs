@@ -30,17 +30,48 @@ pub fn set_background(pid: i32, on: bool) -> bool {
     }
 }
 
+/// Read the first thread's base priority in these single-threaded test children.
+/// `ps pri` reports dynamic priority; task priority misses inherited thread QoS.
+#[cfg(all(test, target_os = "macos"))]
+pub(crate) fn test_priority(pid: i32) -> i32 {
+    const PROC_PIDLISTTHREADS: i32 = 6; // sys/proc_info.h; not exported by libc.
+    let mut thread = 0u64;
+    // SAFETY: the output buffer holds exactly one thread identifier.
+    let read = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            PROC_PIDLISTTHREADS,
+            0,
+            (&mut thread as *mut u64).cast(),
+            8,
+        )
+    };
+    assert_eq!(read, 8, "reading test thread for {pid}");
+    let mut info = std::mem::MaybeUninit::<libc::proc_threadinfo>::uninit();
+    let size = std::mem::size_of::<libc::proc_threadinfo>() as i32;
+    // SAFETY: the buffer has the size and alignment required by PROC_PIDTHREADINFO.
+    let read = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTHREADINFO,
+            thread,
+            info.as_mut_ptr().cast(),
+            size,
+        )
+    };
+    assert_eq!(
+        read,
+        size,
+        "reading thread priority for {pid}: {}",
+        std::io::Error::last_os_error()
+    );
+    // SAFETY: proc_pidinfo initialized the complete structure.
+    unsafe { info.assume_init() }.pth_priority
+}
+
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
-
-    fn pri(pid: u32) -> String {
-        let out = std::process::Command::new("ps")
-            .args(["-o", "pri=", "-p", &pid.to_string()])
-            .output()
-            .unwrap();
-        String::from_utf8_lossy(&out.stdout).trim().to_string()
-    }
 
     #[test]
     fn background_qos_lowers_priority_and_reverts() {
@@ -49,11 +80,11 @@ mod tests {
             .spawn()
             .unwrap();
         let pid = child.id();
-        let normal = pri(pid);
+        let normal = test_priority(pid as i32);
         assert!(set_background(pid as i32, true));
-        assert_eq!(pri(pid), "4");
+        assert_eq!(test_priority(pid as i32), 4);
         assert!(set_background(pid as i32, false));
-        assert_eq!(pri(pid), normal);
+        assert_eq!(test_priority(pid as i32), normal);
         child.kill().unwrap();
         child.wait().unwrap();
     }
