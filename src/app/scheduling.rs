@@ -148,9 +148,11 @@ pub(super) fn round(state: &App) -> Result<()> {
                     Err(e) => return Err(e),
                 }
             }
-            Verdict::Blocked { .. } if current != JobState::Blocked => {
-                store.set_queue_state(&id, crate::domain::job::JobState::Blocked)?;
-                changed = true;
+            Verdict::Blocked { job: predecessor } => {
+                let Some(blocked) = store.block_for(&id, predecessor)? else {
+                    continue;
+                };
+                changed |= blocked;
             }
             Verdict::CapacityInsufficient { .. } if current != JobState::CapacityInsufficient => {
                 store.set_queue_state(&id, crate::domain::job::JobState::CapacityInsufficient)?;

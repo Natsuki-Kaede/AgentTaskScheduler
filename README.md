@@ -34,6 +34,8 @@ Homebrew works on macOS and Linux. Without Homebrew, download the archive for yo
 
 Before replacing an existing installation, read the [upgrade and rollback notes](CHANGELOG.md#upgrade-notes).
 
+On Linux, scheduled jobs require visible cgroup v2 membership and a cgroup v2 mount. See [install requirements](INSTALL.md).
+
 `ats install` shows each change as a diff. It writes nothing before you agree:
 
 - instructions for the model: `~/.claude/ats.md` with an `@ats.md` line in `~/.claude/CLAUDE.md`; for Codex, full guidance in `~/.codex/ATS.md` and a compact entrypoint in `~/.codex/AGENTS.md` that reads it for queued jobs or errors;
@@ -73,12 +75,12 @@ and exits with code 75. The command continues in the background. When ats's diag
 |---|---|
 | `ats run [options] -- <program> [args...]` | Run a program when the machine has memory for it |
 | `ats run [options] --sh '<shell source>'` | Run shell source with your shell |
-| `ats wait <id>` | Wait for a submission to end, then give its output and exit code |
+| `ats wait <id>` | Wait for the job result or report a dependency or capacity issue |
 | `ats status [<id>]` | Show jobs, or one submission or job |
 | `ats logs <id> [-f]` | Show the output of a job, or follow it |
 | `ats why <id>` | Show why a job waits |
 | `ats cancel <id>` | Stop a submission |
-| `ats detach <id>` | Let the agent stop without a wait for the submission; the agent is told when it ends |
+| `ats detach <id>` | Allow this turn to end; report results or blocked work at a later turn. Does not wake a stopped agent |
 | `ats unblock <id>` | Run a job whose predecessor failed |
 
 Options of `ats run`: `--wait <duration>` (default 90s) or `--no-wait`; `--after <id,...>` to run after other jobs succeed; `--lock <path or name>` for a resource that only one job can use at a time; `--hint mem=6G` when the command needs more memory than the prediction; `--now` to start without the queue.

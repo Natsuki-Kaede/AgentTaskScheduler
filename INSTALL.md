@@ -17,6 +17,10 @@ Run `uname -sm`. Find the target for the output in this table:
 
 If the output is not in the table, stop. Tell the user that ats runs on macOS and Linux, on 64-bit Arm and x86.
 
+On Linux, scheduled commands require visible cgroup v2 membership and a cgroup2
+mount so ats can read the executor's memory limits. This also applies in
+containers and when the daemon starts without systemd.
+
 ## 2. Install the binary
 
 If `ats --version` prints a version, go to step 3.
@@ -68,7 +72,7 @@ This adds a compact managed section to `$DSH_HOME/AGENTS.md`, full guidance to `
 
 The installer finds `dsh` on PATH or in the standard macOS app location. Set `DSH_BIN` to an executable launcher path for another installation. Restart the selected profile to load its new bundle. DSH's native Bash tool supplies `DSH_SESSION_ID`; the plugin delivers reminders within that same session.
 
-To remove the integration, use `ats uninstall --agent dsh --dsh-profile <name>`. Shared plugin files and instructions stay until the last configured profile removes ats. The daemon service stays when `--agent` is specified. See [DSH integration](plugins/dsh/README.md) for verification and interface details.
+To remove the integration for one profile, use `ats uninstall --agent dsh --dsh-profile <name>`. Shared plugin files and instructions stay until the last configured profile removes ats. The daemon service stays when `--agent` is specified. Plain `ats uninstall` removes the service and all ATS integrations in the current DSH home. See [DSH integration](plugins/dsh/README.md) for verification and interface details.
 
 ### A different agent
 
@@ -92,3 +96,18 @@ Tell the user these items:
 - that Codex asks to trust the changed hooks when it starts the next time;
 - on Linux: systemd stops the daemon when the user closes the last login session. If the user works over SSH, `loginctl enable-linger` keeps it running;
 - that `ats uninstall` removes the changes of `ats install`. For a different agent, the user also removes the section between the two markers from the instructions file.
+
+## Upgrade an existing installation
+
+Read the [upgrade and rollback notes](CHANGELOG.md#upgrade-notes). Wait for
+active jobs to drain and macOS QoS restoration to settle. Make a consistent
+SQLite backup and save the old binary and login-service configuration before
+replacing the binary. Run the same `ats install` command used for the existing
+integration, adding `--restart`. Preview it with `--dry-run` and then run it with
+`--yes` after reviewing the changes. With a service-only install, use
+`ats install --service --restart`.
+
+The restart option replaces the running daemon even when its executable path
+and login-service configuration are unchanged. Installation checks that the
+daemon responds with the expected version. Restart updated agent sessions,
+including the selected DSH profile, and use `ats status` to check task history.

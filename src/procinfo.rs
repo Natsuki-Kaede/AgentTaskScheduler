@@ -24,9 +24,27 @@ use crate::runtime::family::Family;
 
 pub fn refresh(family: &mut Family, pgid: i32) {
     match snapshot() {
-        Ok(table) => family.observe(Some(pgid), None, &table),
+        Ok(table) => {
+            let executor = std::process::id() as i32;
+            let detached = table
+                .processes
+                .iter()
+                .find(|p| p.pid == executor && p.session == Some(executor))
+                .map(|p| p.identity());
+            family.observe(Some(pgid), detached.as_ref(), &table);
+        }
         Err(e) => tracing::warn!("enumerating job processes: {e}"),
     }
+}
+
+#[cfg(target_os = "linux")]
+pub fn boot_id() -> std::io::Result<String> {
+    let text = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
+    let id = text.trim();
+    if id.is_empty() {
+        return Err(std::io::Error::other("empty Linux boot ID"));
+    }
+    Ok(id.to_owned())
 }
 
 pub fn signal(family: &Family, signal: i32) {
@@ -86,6 +104,7 @@ mod imp {
             pid,
             ppid: fields.get(1)?.parse().ok()?,
             pgid: fields.get(2)?.parse().ok()?,
+            session: Some(fields.get(3)?.parse().ok()?),
             start: fields.get(19)?.to_string(),
         }))
     }
@@ -133,10 +152,12 @@ mod imp {
         if i.pbi_status == 5 {
             return Ok(None);
         }
+        let session = unsafe { libc::getsid(pid) };
         Ok(Some(Proc {
             pid,
             ppid: i.pbi_ppid as i32,
             pgid: i.pbi_pgid as i32,
+            session: (session > 0).then_some(session),
             start: format!("{}.{:06}", i.pbi_start_tvsec, i.pbi_start_tvusec),
         }))
     }

@@ -90,5 +90,23 @@ pub struct PressureStatus {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct HistorySample {
     pub peak: Option<u64>,
+    pub executor_max_rss: Option<u64>,
     pub seconds: Option<f64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CargoEnv {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_dir: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub build_target_dir: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub home: Option<String>,
+}
+
+impl CargoEnv {
+    pub fn is_empty(&self) -> bool {
+        self.target_dir.is_none() && self.build_target_dir.is_none() && self.home.is_none()
+    }
 }

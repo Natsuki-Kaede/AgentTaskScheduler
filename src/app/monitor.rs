@@ -15,6 +15,11 @@ const SETTLE_AFTER: Duration = Duration::from_secs(30);
 const SETTLE_EVERY: u64 = 5;
 
 pub fn initialize(state: &App) -> Result<Registry> {
+    #[cfg(target_os = "linux")]
+    {
+        let boot_id = procinfo::boot_id()?;
+        state.store().register_boot(&boot_id)?;
+    }
     let mut registry = Registry::restore(state.store().process_members()?);
     observe(state, &mut registry)?;
     Ok(registry)
@@ -38,6 +43,17 @@ fn observe_with(
             .map(|job| ProcessRoot {
                 id: job.id,
                 pgid: job.pgid.map(|g| g as i32),
+                leader: job
+                    .pgid
+                    .zip(job.pgid_start)
+                    .map(|(pid, start)| ProcessIdentity {
+                        pid: pid as i32,
+                        start,
+                    }),
+                launched: job.launched.map(|(pid, start)| ProcessIdentity {
+                    pid: pid as i32,
+                    start,
+                }),
                 executor: job.executor.map(|(pid, start)| ProcessIdentity {
                     pid: pid as i32,
                     start,
@@ -155,13 +171,17 @@ mod tests {
             }
             fn alive(&self, _: i64, _: &str) -> bool {
                 assert!(!self.injected.replace(true));
-                self.app.started(&self.job, "/logs", Some(20)).unwrap();
+                self.app
+                    .store()
+                    .record_start(&self.job, "/logs", Some(20), Some("worker"))
+                    .unwrap();
                 observe_with(self.app, &mut self.registry.borrow_mut(), || {
                     Ok(ProcessTable {
                         processes: vec![Process {
                             pid: 20,
                             ppid: 1,
                             pgid: 20,
+                            session: None,
                             start: "worker".into(),
                         }],
                         ..Default::default()
@@ -281,7 +301,9 @@ mod tests {
         app.register_executor(&job, i64::from(std::process::id()), "old-executor")
             .unwrap();
         app.test_admit(&job, 100, 1);
-        app.started(&job, "/logs", Some(20)).unwrap();
+        app.store()
+            .record_start(&job, "/logs", Some(20), Some("worker"))
+            .unwrap();
         app.main_result(&job, 0).unwrap();
         let mut registry = Registry::restore(Default::default());
         observe_with(&app, &mut registry, || {
@@ -290,6 +312,7 @@ mod tests {
                     pid: 20,
                     ppid: 1,
                     pgid: 20,
+                    session: None,
                     start: "worker".into(),
                 }],
                 ..Default::default()
@@ -342,13 +365,16 @@ mod tests {
             .job;
         app.register_executor(&job, 10, "executor").unwrap();
         app.test_admit(&job, 100, 1);
-        app.started(&job, "/logs", Some(20)).unwrap();
+        app.store()
+            .record_start(&job, "/logs", Some(20), Some("worker"))
+            .unwrap();
         let mut registry = Registry::restore(Default::default());
         let table = |pgid| ProcessTable {
             processes: vec![Process {
                 pid: 20,
                 ppid: 1,
                 pgid,
+                session: None,
                 start: "worker".into(),
             }],
             ..Default::default()

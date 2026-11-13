@@ -23,6 +23,13 @@ pub async fn run(paths: Paths, shutdown: impl Future<Output = ()> + Send + 'stat
     create_private_dir(&paths.temporary)?;
     let _lock = lock::acquire(&paths.lock)?;
 
+    #[cfg(target_os = "linux")]
+    if let Err(error) = crate::sample::memory_scopes(std::process::id() as i32) {
+        tracing::warn!(
+            "cannot inspect the daemon's memory limits: {error}; scheduled executors need visible cgroup v2 membership and mounts"
+        );
+    }
+
     let store = Store::open(&paths.db)?;
     let instance = crate::ids::new("d");
     let profiles = Profiles::load(Some(&paths.profiles))?;
@@ -85,6 +92,7 @@ pub async fn run(paths: Paths, shutdown: impl Future<Output = ()> + Send + 'stat
             stopping.stop();
         })
         .await;
+    state.stop();
     watcher.abort();
     scheduling.abort();
     pruning.abort();

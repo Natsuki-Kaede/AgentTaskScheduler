@@ -74,34 +74,57 @@ mod launchd {
         (domain, target)
     }
 
-    fn loaded(target: &str) -> bool {
-        std::process::Command::new("launchctl")
+    fn loaded(target: &str) -> Result<bool> {
+        Ok(std::process::Command::new("launchctl")
             .args(["print", target])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
-            .is_ok_and(|s| s.success())
+            .context("running launchctl print")?
+            .success())
     }
 
     pub fn unload(_home: &Path) -> Result<()> {
         let (_, target) = target();
-        if loaded(&target) {
-            let _ = std::process::Command::new("launchctl")
-                .args(["bootout", &target])
-                .status();
-            for _ in 0..50 {
-                if !loaded(&target) {
-                    break;
+        unload_with(
+            &target,
+            || loaded(&target),
+            || {
+                let status = std::process::Command::new("launchctl")
+                    .args(["bootout", &target])
+                    .status()
+                    .context("running launchctl bootout")?;
+                if !status.success() {
+                    bail!("launchctl bootout {target} failed: {status}");
                 }
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
-        }
-        Ok(())
+                Ok(())
+            },
+            || std::thread::sleep(std::time::Duration::from_millis(100)),
+        )
     }
 
-    pub fn load(home: &Path, changed: bool, out: &mut impl Write) -> Result<()> {
+    pub(super) fn unload_with(
+        target: &str,
+        mut loaded: impl FnMut() -> Result<bool>,
+        bootout: impl FnOnce() -> Result<()>,
+        mut pause: impl FnMut(),
+    ) -> Result<()> {
+        if !loaded()? {
+            return Ok(());
+        }
+        bootout()?;
+        for _ in 0..50 {
+            if !loaded()? {
+                return Ok(());
+            }
+            pause();
+        }
+        bail!("launchctl still reports {target} loaded after bootout")
+    }
+
+    pub fn load(home: &Path, restart: bool, out: &mut impl Write) -> Result<()> {
         let (domain, target) = target();
-        if !changed && loaded(&target) {
+        if !restart && loaded(&target)? {
             return Ok(());
         }
         unload(home)?;
@@ -170,10 +193,10 @@ mod systemd {
         Ok(())
     }
 
-    pub fn load(_home: &Path, changed: bool, out: &mut impl Write) -> Result<()> {
+    pub fn load(_home: &Path, restart: bool, out: &mut impl Write) -> Result<()> {
         systemctl(&["daemon-reload"])?;
         systemctl(&["enable", UNIT])?;
-        systemctl(&[if changed { "restart" } else { "start" }, UNIT])?;
+        systemctl(&[if restart { "restart" } else { "start" }, UNIT])?;
         writeln!(out, "The daemon now runs at login: {UNIT}")?;
         Ok(())
     }
@@ -213,5 +236,18 @@ mod tests {
             "{unit}"
         );
         assert!(unit.contains("WantedBy=default.target"));
+    }
+
+    #[test]
+    fn launchd_unload_reports_a_failed_bootout_or_a_service_that_stays_loaded() {
+        let target = "gui/1/test";
+        let error =
+            launchd::unload_with(target, || Ok(true), || bail!("denied"), || {}).unwrap_err();
+        assert_eq!(error.to_string(), "denied");
+        let error = launchd::unload_with(target, || Ok(true), || Ok(()), || {}).unwrap_err();
+        assert!(error.to_string().contains("still reports"));
+
+        let mut loaded = [true, true, false].into_iter();
+        launchd::unload_with(target, || Ok(loaded.next().unwrap()), || Ok(()), || {}).unwrap();
     }
 }

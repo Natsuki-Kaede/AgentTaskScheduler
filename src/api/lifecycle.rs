@@ -14,6 +14,7 @@ pub fn routes() -> Router<App> {
         .route("/v1/jobs/{id}/executor", post(executor))
         .route("/v1/jobs/{id}/lease", post(lease))
         .route("/v1/jobs/{id}/started", post(started))
+        .route("/v1/jobs/{id}/launch", post(launch))
         .route("/v1/jobs/{id}/main-result", post(main_result))
         .route("/v1/jobs/{id}/finished", post(finished))
         .route("/v1/jobs/{id}/control", get(control))
@@ -23,6 +24,7 @@ pub fn routes() -> Router<App> {
         .route("/v1/submissions/{id}/detach", post(detach))
         .route("/v1/sessions/{id}/running", get(running))
         .route("/v1/sessions/{id}/ended", post(ended))
+        .route("/v1/sessions/{id}/attention", post(attention))
         .route("/v1/jobs/{id}/why", get(why))
         .route("/v1/jobs/{id}/unblock", post(unblock))
 }
@@ -60,6 +62,14 @@ async fn started(
     Json(b): Json<StartedRequest>,
 ) -> ApiResult<Response> {
     s.started(&id, &b.log_path, b.pgid)?;
+    ok()
+}
+async fn launch(
+    State(s): State<App>,
+    Path(id): Path<String>,
+    Json(b): Json<ExecutorRequest>,
+) -> ApiResult<Response> {
+    s.launch(&id, b.pid, &b.start)?;
     ok()
 }
 async fn main_result(
@@ -136,6 +146,16 @@ async fn running(State(s): State<App>, Path(id): Path<String>) -> ApiResult<Resp
 async fn ended(State(s): State<App>, Path(id): Path<String>) -> ApiResult<Response> {
     Ok(Json(
         s.take_ended_reminders(&id)?
+            .into_iter()
+            .map(Reminder::from)
+            .collect::<Vec<_>>(),
+    )
+    .into_response())
+}
+
+async fn attention(State(s): State<App>, Path(id): Path<String>) -> ApiResult<Response> {
+    Ok(Json(
+        s.take_attention_reminders(&id)?
             .into_iter()
             .map(Reminder::from)
             .collect::<Vec<_>>(),

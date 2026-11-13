@@ -28,7 +28,7 @@ impl Store {
     ) -> Result<Vec<HistorySample>> {
         let since = humantime::format_rfc3339_millis(SystemTime::now() - super::KEEP).to_string();
         let mut stmt = self.conn.prepare_cached(
-            "SELECT peak_private, started_at, ended_at FROM jobs
+            "SELECT peak_private, finish_max_rss, started_at, ended_at FROM jobs
              WHERE state = 'completed' AND exit_code = 0 AND ended_at >= ?1
                AND (?2 IS NULL OR project_root = ?2)
                AND (?3 IS NULL OR command = ?3)
@@ -38,15 +38,17 @@ impl Store {
         let rows = stmt.query_map(params![since, project, command, key, LIMIT], |r| {
             Ok((
                 r.get::<_, Option<i64>>(0)?,
-                r.get::<_, Option<String>>(1)?,
+                r.get::<_, Option<i64>>(1)?,
                 r.get::<_, Option<String>>(2)?,
+                r.get::<_, Option<String>>(3)?,
             ))
         })?;
         let mut samples = Vec::new();
         for row in rows {
-            let (peak, start, end) = row?;
+            let (peak, executor_max_rss, start, end) = row?;
             samples.push(HistorySample {
                 peak: peak.map(|p| p as u64),
+                executor_max_rss: executor_max_rss.map(|rss| rss as u64),
                 seconds: start.zip(end).and_then(|(s, e)| seconds_between(&s, &e)),
             });
         }
@@ -151,6 +153,39 @@ mod tests {
             history(&store, Some("/c"), None, Some("make")).unwrap().mem,
             Some(60)
         );
+    }
+
+    #[test]
+    fn prediction_includes_rss_peaks_missed_by_private_memory_sampling() {
+        use crate::domain::job::{FinishReport, JobEvent, JobState};
+
+        let mut store = Store::open_in_memory().unwrap();
+        let job = store
+            .create_submission(&super::super::tests::sample("make"))
+            .unwrap()
+            .job;
+        store.set_executor(&job, 1, "t").unwrap();
+        store.admit(&job, 0, 1).unwrap();
+        store.set_started(&job, "/logs", None).unwrap();
+        store.record_peaks(&[(job.clone(), 10)]).unwrap();
+        store
+            .report_finish(
+                &job,
+                &FinishReport {
+                    state: JobState::Completed,
+                    exit_code: Some(0),
+                    max_rss: Some(100),
+                },
+            )
+            .unwrap();
+        let facts = store.recovery_facts(&job).unwrap();
+        store
+            .recover(&facts, &[], JobEvent::Finish(JobState::Completed), Some(0))
+            .unwrap();
+        let samples = store.history(None, Some("make"), None).unwrap();
+        assert_eq!(samples[0].peak, Some(10));
+        assert_eq!(samples[0].executor_max_rss, Some(100));
+        assert_eq!(Stats::from_history(&samples).mem, Some(130));
     }
     #[test]
     fn early_failures_do_not_replace_profile_or_successful_history() {

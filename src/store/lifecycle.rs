@@ -52,7 +52,7 @@ fn current(conn: &rusqlite::Connection, job: &str) -> Result<Current> {
 
 enum Report<'a> {
     Executor(i64, &'a str),
-    Started(&'a str, Option<i64>),
+    Started(&'a str, Option<i64>, Option<&'a str>),
     Main(i64),
     Finished(JobState, Option<i64>, Option<i64>),
     Lost,
@@ -109,7 +109,7 @@ impl Store {
                 }
                 JobEvent::RegisterExecutor
             }
-            Report::Started(log, pgid) => {
+            Report::Started(log, pgid, _) => {
                 if current.state == JobState::Running {
                     return if current.log_path.as_deref() == Some(log) && current.pgid == pgid {
                         Ok(())
@@ -158,8 +158,8 @@ impl Store {
                 )?;
                 ("executor", Some(pid.to_string()))
             }
-            Report::Started(log, pgid) => {
-                tx.execute("UPDATE jobs SET state = ?2, started_at = ?3, log_path = ?4, pgid = ?5 WHERE id = ?1", params![job, next, at, log, pgid])?;
+            Report::Started(log, pgid, pgid_start) => {
+                tx.execute("UPDATE jobs SET state = ?2, started_at = ?3, log_path = ?4, pgid = ?5, pgid_start = ?6 WHERE id = ?1", params![job, next, at, log, pgid, pgid_start])?;
                 ("started", None)
             }
             Report::Main(code) => {
@@ -190,8 +190,52 @@ impl Store {
     pub fn set_executor(&mut self, job: &str, pid: i64, start: &str) -> Result<()> {
         self.apply_report(job, Report::Executor(pid, start), None)
     }
+    pub fn record_start(
+        &mut self,
+        job: &str,
+        log_path: &str,
+        pgid: Option<i64>,
+        pgid_start: Option<&str>,
+    ) -> Result<()> {
+        self.apply_report(job, Report::Started(log_path, pgid, pgid_start), None)
+    }
+
+    pub fn record_launch(&mut self, expected: &ActiveJob, child: &ProcessIdentity) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        let current = tx.query_row(
+            &format!("SELECT {} FROM jobs WHERE id = ?1", super::RECOVERY_COLUMNS),
+            [&expected.id],
+            super::recovery_row,
+        )?;
+        let child = (i64::from(child.pid), child.start.as_str());
+        if current
+            .launched
+            .as_ref()
+            .is_some_and(|(pid, start)| (*pid, start.as_str()) == child)
+        {
+            return Ok(());
+        }
+        if current != *expected
+            || current.state != JobState::Running
+            || current.canceled
+            || current.finish.is_some()
+            || current.main_exit_code.is_some()
+            || current.launched.is_some()
+        {
+            return Err(Conflict(format!("job {} cannot launch this process", expected.id)).into());
+        }
+        tx.execute(
+            "UPDATE jobs SET launch_pid = ?2, launch_start = ?3 WHERE id = ?1",
+            params![expected.id, child.0, child.1],
+        )?;
+        Self::event(&tx, &expected.id, "launch_authorized", None)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    #[cfg(test)]
     pub fn set_started(&mut self, job: &str, log_path: &str, pgid: Option<i64>) -> Result<()> {
-        self.apply_report(job, Report::Started(log_path, pgid), None)
+        self.record_start(job, log_path, pgid, None)
     }
     pub fn set_main_result(&mut self, job: &str, code: i64) -> Result<()> {
         self.apply_report(job, Report::Main(code), None)
@@ -280,6 +324,82 @@ impl rusqlite::ToSql for JobState {
 mod tests {
     use super::*;
     use crate::store::tests::sample;
+
+    #[test]
+    fn cancellation_and_start_are_ordered_by_the_store() {
+        for canceled_first in [true, false] {
+            let mut store = Store::open_in_memory().unwrap();
+            let created = store.create_submission(&sample("make")).unwrap();
+            let job = &created.job;
+            store.set_executor(job, 10, "executor").unwrap();
+            store.admit(job, 100, 1).unwrap();
+            if !canceled_first {
+                store.set_started(job, "/logs", Some(20)).unwrap();
+            }
+            store.cancel_submission(&created.submission).unwrap();
+
+            let row = store.job(job).unwrap().unwrap();
+            if canceled_first {
+                assert_eq!(row.state, JobState::Canceled);
+                assert!(row.started_at.is_none());
+                assert!(store.held_jobs().unwrap().is_empty());
+                assert!(store.set_started(job, "/logs", Some(20)).is_err());
+            } else {
+                assert_eq!(row.state, JobState::Running);
+                assert!(row.started_at.is_some());
+                assert_eq!(store.held_jobs().unwrap().len(), 1);
+                store.set_started(job, "/logs", Some(20)).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn launch_commit_orders_cancellation_and_replays_one_verified_identity() {
+        for canceled_first in [true, false] {
+            let mut store = Store::open_in_memory().unwrap();
+            let created = store.create_submission(&sample("make")).unwrap();
+            let job = &created.job;
+            store.set_executor(job, 10, "executor").unwrap();
+            store.admit(job, 100, 1).unwrap();
+            store
+                .record_start(job, "/logs", Some(20), Some("leader"))
+                .unwrap();
+            let expected = store.recovery_facts(job).unwrap();
+            let child = ProcessIdentity {
+                pid: 21,
+                start: "child".into(),
+            };
+            if canceled_first {
+                store.cancel_submission(&created.submission).unwrap();
+                assert!(store.record_launch(&expected, &child).is_err());
+                assert!(store.recovery_facts(job).unwrap().launched.is_none());
+            } else {
+                store.record_launch(&expected, &child).unwrap();
+                store.record_launch(&expected, &child).unwrap();
+                assert_eq!(
+                    store.recovery_facts(job).unwrap().launched,
+                    Some((21, "child".into()))
+                );
+                assert!(
+                    store
+                        .record_launch(
+                            &expected,
+                            &ProcessIdentity {
+                                pid: 21,
+                                start: "reused".into(),
+                            }
+                        )
+                        .is_err()
+                );
+                let events: i64 = store.conn.query_row(
+                    "SELECT COUNT(*) FROM job_events WHERE job_id = ?1 AND kind = 'launch_authorized'",
+                    [job],
+                    |row| row.get(0),
+                ).unwrap();
+                assert_eq!(events, 1);
+            }
+        }
+    }
 
     #[test]
     fn reported_spawn_failure_can_finalize_after_takeover() {

@@ -32,6 +32,8 @@ ats install
 
 Homebrew 在 macOS 和 Linux 上都能用。没有 Homebrew 时，从 [Releases](https://github.com/Natsuki-Kaede/AgentTaskScheduler/releases) 下载对应机器的压缩包；或者装好 Rust 工具链，运行 `cargo install --locked --git https://github.com/Natsuki-Kaede/AgentTaskScheduler`。
 
+Linux 上，排队任务需要能读取 cgroup v2 成员关系和挂载点。替换已有安装前请阅读[升级与回滚说明](CHANGELOG.md#upgrade-notes)。
+
 `ats install` 把每处改动以 diff 展示，你同意前不写入任何文件：
 
 - 给模型的指令：`~/.claude/ats.md`，加上 `~/.claude/CLAUDE.md` 里的一行 `@ats.md`；Codex 的完整说明写入 `~/.codex/ATS.md`，`~/.codex/AGENTS.md` 只保留简短入口，在任务排队或出错时读取；
@@ -71,12 +73,12 @@ Codex 下次启动时会请你信任改动过的 hook。
 |---|---|
 | `ats run [选项] -- <程序> [参数...]` | 机器有足够内存时运行程序 |
 | `ats run [选项] --sh '<shell 代码>'` | 用你的 shell 运行一段 shell 代码 |
-| `ats wait <id>` | 等提交结束，然后返回它的输出和退出码 |
+| `ats wait <id>` | 等待任务结果，或提示需要处理的依赖和容量问题 |
 | `ats status [<id>]` | 列出任务，或查看一个提交或任务 |
 | `ats logs <id> [-f]` | 查看任务输出，或持续跟随 |
 | `ats why <id>` | 查看任务为什么在等 |
 | `ats cancel <id>` | 停止一个提交 |
-| `ats detach <id>` | agent 可以不等这个提交就结束本轮，提交结束时 agent 会收到通知 |
+| `ats detach <id>` | 允许 agent 结束本轮；结果或阻塞状态在后续回合提醒，不会主动唤醒已停止的 agent |
 | `ats unblock <id>` | 运行前置任务失败的任务 |
 
 `ats run` 的选项：`--wait <时长>`（默认 90s）或 `--no-wait`；`--after <id,...>` 在其他任务成功后再运行；`--lock <路径或名称>` 用于同一时间只能给一个任务用的资源；`--hint mem=6G` 用于命令需要的内存比预测多的情况；`--now` 不排队直接启动。

@@ -133,7 +133,7 @@ mod tests {
                 .conn
                 .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            5
+            super::super::SCHEMA_VERSION
         );
         assert_eq!(store.recovery_facts(&job).unwrap().state, JobState::Running);
         assert!(store.recovery_facts(&job).unwrap().finish.is_none());

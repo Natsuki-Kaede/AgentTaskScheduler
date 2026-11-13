@@ -10,14 +10,16 @@ mod background;
 mod history;
 mod lifecycle;
 mod processes;
+mod reminders;
 mod sched;
 
 use crate::domain::job::JobState;
 use crate::domain::job::{HELD, TERMINAL};
 
 const SCHEMA: &str = include_str!("schema.sql");
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 const SCHEMA_V5: &str = include_str!("schema_v5.sql");
+const SCHEMA_V6: &str = include_str!("schema_v6.sql");
 const BACKGROUND_SCHEMA: &str = "CREATE TABLE background_processes (
     pid INTEGER NOT NULL,
     start TEXT NOT NULL,
@@ -32,9 +34,7 @@ pub struct Store {
     conn: Connection,
 }
 
-use crate::domain::job::{
-    ActiveJob, Created, JobRecord, NewSubmission, Reminder, SubmissionRecord,
-};
+use crate::domain::job::{ActiveJob, Created, JobRecord, NewSubmission, SubmissionRecord};
 
 fn process(pid: Option<i64>, start: Option<String>) -> Option<(i64, String)> {
     pid.zip(start)
@@ -43,7 +43,7 @@ fn process(pid: Option<i64>, start: Option<String>) -> Option<(i64, String)> {
 const RECOVERY_COLUMNS: &str =
     "id, state, executor_pid, executor_start, pgid, launcher_pid, launcher_start, main_exit_code,
     NOT EXISTS (SELECT 1 FROM submissions s WHERE s.job_id = jobs.id AND s.canceled = 0),
-    finish_state, finish_exit_code, finish_max_rss";
+    finish_state, finish_exit_code, finish_max_rss, pgid_start, launch_pid, launch_start";
 
 fn recovery_row(r: &rusqlite::Row) -> rusqlite::Result<ActiveJob> {
     Ok(ActiveJob {
@@ -51,6 +51,8 @@ fn recovery_row(r: &rusqlite::Row) -> rusqlite::Result<ActiveJob> {
         state: r.get(1)?,
         executor: process(r.get(2)?, r.get(3)?),
         pgid: r.get(4)?,
+        pgid_start: r.get(12)?,
+        launched: process(r.get(13)?, r.get(14)?),
         launcher: process(r.get(5)?, r.get(6)?),
         main_exit_code: r.get(7)?,
         canceled: r.get(8)?,
@@ -132,6 +134,9 @@ impl Store {
         }
         if version < 5 {
             tx.execute_batch(SCHEMA_V5)?;
+        }
+        if version < 6 {
+            tx.execute_batch(SCHEMA_V6)?;
         }
         tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         tx.commit()?;
@@ -334,7 +339,7 @@ impl Store {
             params![job],
             |r| r.get(0),
         )?;
-        if open == 0 && state.pre_lease() {
+        if open == 0 && (state.pre_lease() || state == JobState::Admitted) {
             state
                 .transition(crate::domain::job::JobEvent::Finish(JobState::Canceled))
                 .map_err(|e| Conflict(e.to_string()))?;
@@ -349,39 +354,17 @@ impl Store {
     }
 
     pub fn quiet_submission(&mut self, id: &str) -> Result<String> {
-        self.update_submission(id, "quiet = 1")
+        self.update_submission(
+            id,
+            &format!(
+                "quiet = CASE WHEN EXISTS (SELECT 1 FROM jobs j WHERE j.id = job_id AND (j.state IN ({}) OR j.main_exit_code IS NOT NULL)) THEN 1 ELSE quiet END",
+                sched::in_list(TERMINAL)
+            ),
+        )
     }
 
     pub fn detach_submission(&mut self, id: &str) -> Result<String> {
         self.update_submission(id, "detached = 1")
-    }
-
-    fn reminders(conn: &Connection, session: &str, ended: bool) -> Result<Vec<Reminder>> {
-        let (open, state) = if ended {
-            ("s.quiet = 0", "")
-        } else {
-            ("s.detached = 0", "NOT")
-        };
-        let mut stmt = conn.prepare_cached(&format!(
-            "SELECT s.id, s.job_id, j.state, j.exit_code, j.command FROM submissions s JOIN jobs j ON j.id = s.job_id
-             WHERE s.session_id = ?1 AND {open} AND s.canceled = 0 AND j.state {state} IN ({})
-             ORDER BY s.created_at",
-            sched::in_list(TERMINAL)
-        ))?;
-        let rows = stmt.query_map(params![session], |r| {
-            Ok(Reminder {
-                submission: r.get(0)?,
-                job: r.get(1)?,
-                state: r.get(2)?,
-                exit_code: r.get(3)?,
-                command: r.get(4)?,
-            })
-        })?;
-        Ok(rows.collect::<Result<_, _>>()?)
-    }
-
-    pub fn running_reminders(&self, session: &str) -> Result<Vec<Reminder>> {
-        Self::reminders(&self.conn, session, false)
     }
 
     pub fn prune(&mut self, before: &str) -> Result<Vec<(String, Option<String>)>> {
@@ -413,19 +396,6 @@ impl Store {
         Ok(old)
     }
 
-    pub fn take_ended_reminders(&mut self, session: &str) -> Result<Vec<Reminder>> {
-        let tx = self.conn.transaction()?;
-        let ended = Self::reminders(&tx, session, true)?;
-        for r in &ended {
-            tx.execute(
-                "UPDATE submissions SET quiet = 1 WHERE id = ?1",
-                params![r.submission],
-            )?;
-        }
-        tx.commit()?;
-        Ok(ended)
-    }
-
     pub fn cancel_requested(&self, job: &str) -> Result<bool> {
         let open: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM submissions WHERE job_id = ?1 AND canceled = 0",
@@ -437,9 +407,9 @@ impl Store {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
-    use crate::domain::job::{Entry, Plan};
+    use crate::domain::job::{Entry, Plan, Reminder};
 
     pub(crate) fn sample(command: &str) -> NewSubmission {
         NewSubmission {

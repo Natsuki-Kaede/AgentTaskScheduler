@@ -1,7 +1,7 @@
 //! Provides the executor's FIFO jobserver pool.
 
-use std::ffi::CString;
-use std::os::unix::ffi::OsStrExt;
+use std::ffi::{CString, OsString};
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
@@ -33,12 +33,15 @@ impl Pool {
         Ok(pool)
     }
 
-    pub fn makeflags(&self, tokens: u32) -> String {
-        format!(
-            " -j{} --jobserver-auth=fifo:{}",
-            tokens + 1,
-            self.path.display()
-        )
+    pub fn makeflags(&self, tokens: u32) -> OsString {
+        let mut flags = format!(" -j{} --jobserver-auth=fifo:", tokens + 1).into_bytes();
+        for &byte in self.path.as_os_str().as_bytes() {
+            if byte.is_ascii_whitespace() || byte == b'\\' {
+                flags.push(b'\\');
+            }
+            flags.push(byte);
+        }
+        OsString::from_vec(flags)
     }
 
     fn put(&self, n: u32) -> Result<()> {
@@ -89,10 +92,24 @@ mod tests {
         assert_eq!(available(&pool.path), 5);
         assert_eq!(
             pool.makeflags(5),
-            format!(" -j6 --jobserver-auth=fifo:{}", pool.path.display())
+            OsString::from(format!(
+                " -j6 --jobserver-auth=fifo:{}",
+                pool.path.display()
+            ))
         );
         let path = pool.path.clone();
         drop(pool);
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn fifo_paths_are_one_makeflags_argument() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = Pool::create(&dir.path().join("space here\\slash"), "j", 1).unwrap();
+        assert!(
+            pool.makeflags(1)
+                .as_encoded_bytes()
+                .ends_with(b"/space\\ here\\\\slash/j.fifo")
+        );
     }
 }

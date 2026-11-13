@@ -13,8 +13,15 @@ impl Registry {
     pub fn observe(&self, roots: Vec<ProcessRoot>, table: ProcessTable) -> ProcessSnapshot {
         let mut members = Memberships::new();
         for root in &roots {
-            let mut family =
-                Family::from_members(self.members.get(&root.id).cloned().unwrap_or_default());
+            let mut family = Family::from_members(
+                self.members
+                    .get(&root.id)
+                    .into_iter()
+                    .flatten()
+                    .chain(root.leader.as_ref())
+                    .chain(root.launched.as_ref())
+                    .cloned(),
+            );
             family.observe(root.pgid, root.executor.as_ref(), &table);
             members.insert(root.id.clone(), family.members());
         }

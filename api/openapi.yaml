@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: ats daemon API
-  version: 0.1.2
+  version: 0.1.5
   description: |
     API of the Agent Task Scheduler daemon. The CLI, executors and hooks reach
     it over a unix socket in the data directory; clients that cannot reach the
@@ -58,6 +58,7 @@ paths:
               schema: { $ref: '#/components/schemas/Created' }
         '400': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
+        '422': { description: Invalid request fields }
 
   /v1/submissions/{id}:
     get:
@@ -168,6 +169,27 @@ paths:
         '204': { description: Recorded }
         '404': { $ref: '#/components/responses/Error' }
 
+  /v1/jobs/{id}/launch:
+    post:
+      summary: Record the process identity before executing a leased command
+      description: Current executors keep the child paused until the daemon records its verified PID and start time. Repeating the same eligible request is idempotent.
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pid, start]
+              properties:
+                pid: { type: integer }
+                start: { type: string }
+      responses:
+        '204': { description: Recorded }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+
   /v1/jobs/{id}/main-result:
     post:
       summary: The main execution process exited and both output streams ended
@@ -256,7 +278,7 @@ paths:
               schema:
                 type: object
                 properties:
-                  reached: { type: boolean }
+                  reached: { type: boolean, description: The requested result is available or the job requires attention before it can run. }
                   submission: { $ref: '#/components/schemas/Submission' }
         '400': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
@@ -274,7 +296,7 @@ paths:
   /v1/submissions/{id}/quiet:
     post:
       summary: Do not report a submission's end
-      description: Set by the CLI once the submission's result has reached the agent.
+      description: Set by the CLI once a terminal or main-process result has reached the agent. Jobs without either result are left unchanged; observing a blocked state never acknowledges the final result.
       parameters:
         - { $ref: '#/components/parameters/Id' }
       responses:
@@ -284,7 +306,7 @@ paths:
   /v1/submissions/{id}/detach:
     post:
       summary: Let the agent stop without waiting for a submission
-      description: The Stop reminder leaves it out; its end is still reported once.
+      description: Ordinary pending work no longer holds Stop. Unacknowledged blocked or capacity_insufficient states still require attention. Final results are reported at a later turn; detach does not wake a stopped agent.
       parameters:
         - { $ref: '#/components/parameters/Id' }
       responses:
@@ -307,6 +329,19 @@ paths:
     post:
       summary: A session's ended submissions not yet reported, for the UserPromptSubmit reminder
       description: The submissions returned become quiet, so each is reported once.
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Reminder' } }
+
+  /v1/sessions/{id}/attention:
+    post:
+      summary: Claim a session's unreported blocked or capacity_insufficient submissions
+      description: Includes detached work. Stop and next-turn hooks share a transactional receipt, independently of final-result delivery. Each uninterrupted attention state is reported once; leaving and reentering it makes it reportable again.
       parameters:
         - { $ref: '#/components/parameters/Id' }
       responses:
@@ -413,6 +448,14 @@ components:
         now: { type: boolean, default: false, description: Skip the queue unless a dependency or lock conflicts }
         lock: { type: array, items: { type: string }, description: Extra paths or named resources to lock }
         hint: { type: string, description: 'Expected memory such as mem=6G; used where higher than predicted' }
+        cargo_env:
+          type: object
+          description: Optional Cargo path settings from the submitter, used only for lock planning.
+          additionalProperties: false
+          properties:
+            target_dir: { type: string, description: CARGO_TARGET_DIR }
+            build_target_dir: { type: string, description: CARGO_BUILD_TARGET_DIR }
+            home: { type: string, description: CARGO_HOME }
       additionalProperties: false
 
     Created:
@@ -501,5 +544,5 @@ components:
         main_exit_code: { type: [integer, 'null'] }
         log_path: { type: [string, 'null'] }
         canceled: { type: boolean }
-        detached: { type: boolean, description: The Stop reminder leaves it out }
+        detached: { type: boolean, description: Ordinary pending work no longer holds Stop; unreported attention states can still be reported }
         quiet: { type: boolean, description: Its end is not reported }

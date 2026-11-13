@@ -113,6 +113,11 @@ pub struct SubmitRequest {
     #[serde(default)]
     pub lock: Vec<String>,
     pub hint: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::domain::resource::CargoEnv::is_empty"
+    )]
+    pub cargo_env: crate::domain::resource::CargoEnv,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -212,6 +217,25 @@ mod tests {
     use super::*;
     use crate::domain::resource::LeaseTerms;
     use serde_json::json;
+
+    #[test]
+    fn legacy_submissions_omit_optional_cargo_settings() {
+        let mut request: SubmitRequest = serde_json::from_value(json!({
+            "entry": "argv", "argv": ["cargo", "build"], "cwd": "/work"
+        }))
+        .unwrap();
+        assert!(
+            serde_json::to_value(&request)
+                .unwrap()
+                .get("cargo_env")
+                .is_none()
+        );
+        request.cargo_env.target_dir = Some("../shared".into());
+        assert_eq!(
+            serde_json::to_value(&request).unwrap()["cargo_env"],
+            json!({"target_dir": "../shared"})
+        );
+    }
 
     #[test]
     fn lease_messages_preserve_the_flat_v1_wire_contract() {

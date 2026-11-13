@@ -81,6 +81,7 @@ async fn submit(
         now: req.now,
         locks: req.lock,
         hint: req.hint,
+        cargo_env: req.cargo_env,
     };
     Ok((StatusCode::CREATED, Json(s.submit(command)?)).into_response())
 }

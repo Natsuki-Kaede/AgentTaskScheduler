@@ -19,3 +19,13 @@ jobs:
           node-version: '24'
       - run: rustup toolchain install stable --profile minimal --component rustfmt,clippy && rustup default stable
       - run: scripts/check.sh
+      - name: Verify upgrade from v0.1.4
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          git fetch --depth=1 origin tag v0.1.4
+          baseline="$(mktemp -d)"
+          trap 'rm -rf "$baseline"' EXIT
+          git archive v0.1.4 | tar -x -C "$baseline"
+          cargo build --locked --manifest-path "$baseline/Cargo.toml"
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/check-upgrade.py \
+            --old-binary "$baseline/target/debug/ats" --new-binary "$PWD/target/debug/ats"

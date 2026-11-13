@@ -107,7 +107,11 @@ pub fn parse_size(text: &str) -> Result<u64, String> {
         .trim()
         .parse()
         .map_err(|_| format!("bad size {text:?}"))?;
-    Ok((n * (1u64 << shift) as f64) as u64)
+    let bytes = n * (1u64 << shift) as f64;
+    if !(0.0..i64::MAX as f64).contains(&bytes) {
+        return Err(format!("size out of range: {text:?}"));
+    }
+    Ok(bytes as u64)
 }
 
 pub fn positionals<'a>(args: &'a [String], value_flags: &[String]) -> Vec<&'a str> {
@@ -229,6 +233,8 @@ mod tests {
         assert_eq!(parse_size("1.5G"), Ok(3 << 29));
         assert_eq!(parse_size("2GiB"), Ok(2 << 30));
         assert!(parse_size("3 parsecs").is_err());
+        assert!(parse_size("-1G").is_err());
+        assert!(parse_size("100000000000G").is_err());
     }
 
     #[test]

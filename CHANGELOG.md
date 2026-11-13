@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.1.5 - 2026-11-13
+
+### Fixed
+
+- Honor cancellation before starting a leased command and terminate confirmed
+  descendants even when only the daemon observed them. Record the command's
+  process identity before execution so immediate executor loss preserves ownership.
+- Preserve submission IDs after an interrupted CLI handoff and preserve command
+  exit results when capturing output fails.
+- Recover the request-file channel from transient directory errors and collect
+  abandoned requests and responses.
+- Report blocked and capacity-limited work once per incident, including
+  detached work, without consuming its completion reminder.
+- Derive Cargo output locks from caller settings and Cargo configuration.
+  Include the executor's maximum RSS when predicting memory from history.
+- Handle spaces in jobserver FIFO paths, keep installer backups private and
+  remove all ATS-linked DSH profiles on a full uninstall.
+- Support an explicit login-service restart after replacing the binary at the
+  same path.
+- Update Tokio, bundled SQLite and rustix to versions with their published
+  advisory fixes.
+
+### Upgrade notes
+
+The database upgrades transactionally to schema 6. Drain active jobs and wait
+for QoS restoration to settle, then back up the database with SQLite's backup
+API and keep the previous binary. After replacing a login-service binary, use
+`ats install --restart` with the same agent selection as before and verify that
+the new daemon starts. For a manually started daemon, restart it with the new
+binary. Restoring an older daemon requires the corresponding pre-upgrade
+database backup. That restore discards changes written after the backup.
+
+Linux admission requires visible cgroup v2 membership and mounts. Commands
+with target directories chosen by shell logic or wrappers can provide an
+explicit `--lock` for that directory.
+
 ## 0.1.4 - 2026-11-11
 
 ### Fixed
@@ -54,7 +90,7 @@ explicit `--target-dir` or `--lock` for those shared output directories.
   handlers away from database transactions and coordination locks.
 - Add isolated cross-version and concurrent process-tree acceptance scripts.
 
-### Upgrade notes
+### Upgrade notes for 0.1.3
 
 The database upgrades transactionally from schema 3 or 4 to schema 5. Existing
 CLI commands and `/v1` protocol messages remain compatible. A completion-report

@@ -37,7 +37,10 @@ pub struct Stats {
 
 impl Stats {
     pub fn from_history(samples: &[HistorySample]) -> Self {
-        let mem: Vec<u64> = samples.iter().filter_map(|s| s.peak).collect();
+        let mem: Vec<u64> = samples
+            .iter()
+            .filter_map(|s| s.peak.max(s.executor_max_rss))
+            .collect();
         let seconds: Vec<f64> = samples.iter().filter_map(|s| s.seconds).collect();
         Self::from_samples(&mem, &seconds)
     }

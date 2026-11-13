@@ -1,7 +1,10 @@
 //! Runs leased jobs, captures output and reports results.
 
 mod jobserver;
+mod launch;
 mod logwriter;
+
+pub use launch::launch;
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -105,16 +108,45 @@ fn log_dir(paths: &Paths, job: &str) -> Result<PathBuf> {
 }
 
 async fn pump(mut src: impl tokio::io::AsyncRead + Unpin, path: PathBuf) -> Result<()> {
-    let mut log = CappedLog::create(&path, LOG_HEAD, LOG_TAIL)?;
+    let mut log = CappedLog::create(&path, LOG_HEAD, LOG_TAIL);
     let mut buf = vec![0u8; 64 << 10];
     loop {
-        let n = src.read(&mut buf).await?;
+        let n = src
+            .read(&mut buf)
+            .await
+            .with_context(|| format!("reading output for {}", path.display()))?;
         if n == 0 {
             break;
         }
-        log.write(&buf[..n])?;
+        if let Ok(writer) = &mut log
+            && let Err(error) = writer.write(&buf[..n])
+        {
+            log = Err(error);
+        }
     }
-    log.finish()?;
+    log.and_then(CappedLog::finish)
+        .with_context(|| format!("capturing output in {}", path.display()))
+}
+
+async fn collect_streams(
+    out: tokio::task::JoinHandle<Result<()>>,
+    err: tokio::task::JoinHandle<Result<()>>,
+    dir: &Path,
+) -> Result<()> {
+    let (out, err) = tokio::join!(out, err);
+    let errors = [
+        out.context("stdout capture task"),
+        err.context("stderr capture task"),
+    ]
+    .into_iter()
+    .filter_map(|result| result.and_then(|capture| capture).err())
+    .map(|error| format!("{error:#}"))
+    .collect::<Vec<_>>();
+    if !errors.is_empty() {
+        let message = errors.join("\n");
+        let _ = std::fs::write(dir.join("capture-errors.log"), &message);
+        bail!("{message}");
+    }
     Ok(())
 }
 
@@ -133,7 +165,12 @@ pub async fn run(paths: Paths, job: String, spec: RunSpec, cwd: PathBuf) -> Resu
     };
 
     let dir = log_dir(&paths, &job)?;
-    let mut cmd = tokio::process::Command::from(spec.command());
+    let (mut cmd, gate) = if cfg!(test) {
+        (spec.command(), None)
+    } else {
+        let (cmd, gate) = launch::command(&spec)?;
+        (cmd, Some(gate))
+    };
     if let Some(n) = terms.parallelism {
         for var in &terms.env {
             if std::env::var_os(var).is_none() {
@@ -152,7 +189,15 @@ pub async fn run(paths: Paths, job: String, spec: RunSpec, cwd: PathBuf) -> Resu
         }
         _ => None,
     };
-    let result = run_command(&paths, &job, cmd, &cwd, &dir).await;
+    let result = run_command(
+        &paths,
+        &job,
+        tokio::process::Command::from(cmd),
+        gate,
+        &cwd,
+        &dir,
+    )
+    .await;
     drop(pool);
     result
 }
@@ -161,6 +206,7 @@ async fn run_command(
     paths: &Paths,
     job: &str,
     mut cmd: tokio::process::Command,
+    gate: Option<tokio::net::UnixStream>,
     cwd: &Path,
     dir: &Path,
 ) -> Result<()> {
@@ -174,7 +220,9 @@ async fn run_command(
         .spawn()
         .context("starting the job's process group")?;
     let pgid = leader.id().context("group leader has no pid")? as i32;
-    post(
+    let group_start =
+        procinfo::start_time(pgid).context("reading process group leader identity")?;
+    let started = report(
         &paths,
         &format!("/v1/jobs/{job}/started"),
         StartedRequest {
@@ -183,6 +231,18 @@ async fn run_command(
         },
     )
     .await?;
+    if !(200..300).contains(&started.status) {
+        drop(leader.stdin.take());
+        leader.wait().await?;
+        if started.status == 409 {
+            return Ok(());
+        }
+        bail!(
+            "starting job {job}: daemon answered {}: {}",
+            started.status,
+            started.body
+        );
+    }
     cmd.current_dir(cwd)
         .env(JOB_ENV, &job)
         .stdin(Stdio::inherit())
@@ -190,24 +250,61 @@ async fn run_command(
         .stderr(Stdio::piped())
         .process_group(pgid);
     let spawned = cmd.spawn();
-    drop(leader.stdin.take());
-    leader.wait().await?;
+    drop(cmd);
+    let mut family =
+        crate::runtime::family::Family::from_members([crate::domain::process::ProcessIdentity {
+            pid: pgid,
+            start: group_start,
+        }]);
+    if spawned.is_ok() {
+        procinfo::refresh(&mut family, pgid);
+    }
+    if gate.is_some() || spawned.is_err() {
+        drop(leader.stdin.take());
+        leader.wait().await?;
+    }
     let mut child = match spawned {
         Ok(child) => child,
         Err(e) => {
-            std::fs::write(
-                dir.join("stderr.log"),
-                format!("ats: could not start the command: {e}\n"),
-            )?;
-            post(
+            return report_start_failure(&paths, &job, dir, &e.to_string()).await;
+        }
+    };
+    if let Some(gate) = gate {
+        let pid = child.id().context("launch worker has no pid")? as i32;
+        let start = procinfo::start_time(pid).context("reading launch worker identity")?;
+        let answer = report(
+            &paths,
+            &format!("/v1/jobs/{job}/launch"),
+            ExecutorRequest {
+                pid: i64::from(pid),
+                start,
+            },
+        )
+        .await?;
+        if answer.status == 409 {
+            drop(gate);
+            child.wait().await?;
+            let _ = report(
                 &paths,
                 &format!("/v1/jobs/{job}/finished"),
-                FinishedRequest::new(JobState::StartFailed, Some(127), None),
+                ended(JobState::Canceled, None),
             )
             .await?;
             return Ok(());
         }
-    };
+        let legacy_daemon = answer.status == 404 && answer.body.is_null();
+        if !legacy_daemon && !(200..300).contains(&answer.status) {
+            bail!(
+                "releasing job {job}: daemon answered {}: {}",
+                answer.status,
+                answer.body
+            );
+        }
+        if let Some(error) = launch::permit(gate).await? {
+            child.wait().await?;
+            return report_start_failure(&paths, &job, dir, &error).await;
+        }
+    }
     let out = tokio::spawn(pump(
         child.stdout.take().expect("piped stdout"),
         dir.join("stdout.log"),
@@ -218,8 +315,6 @@ async fn run_command(
     ));
 
     let mut canceled = false;
-    let mut family = crate::runtime::family::Family::default();
-    procinfo::refresh(&mut family, pgid);
     let mut poll = tokio::time::interval(GROUP_POLL);
     let cancel = wait_for_cancel(&paths, &job);
     tokio::pin!(cancel);
@@ -233,36 +328,31 @@ async fn run_command(
     if canceled {
         stop_family(pgid, &mut family).await;
         let _ = child.wait().await;
-        let _ = out.await;
-        let _ = err.await;
+        let logs = collect_streams(out, err, dir).await;
         post(
             &paths,
             &format!("/v1/jobs/{job}/finished"),
             ended(JobState::Canceled, None),
         )
         .await?;
-        return Ok(());
+        return logs;
     }
     let main = main.expect("main result");
 
-    let streams = async {
-        out.await??;
-        err.await??;
-        Ok::<(), anyhow::Error>(())
-    };
+    let streams = collect_streams(out, err, dir);
     tokio::pin!(streams);
-    loop {
+    let logs = loop {
         tokio::select! {
-            result = &mut streams => { result?; break; }
+            result = &mut streams => break result,
             () = &mut cancel => {
                 stop_family(pgid, &mut family).await;
-                streams.await?;
+                let logs = streams.await;
                 post(&paths, &format!("/v1/jobs/{job}/finished"), ended(JobState::Canceled, Some(main))).await?;
-                return Ok(());
+                return logs;
             }
             _ = poll.tick() => procinfo::refresh(&mut family, pgid),
         }
-    }
+    };
     post(
         &paths,
         &format!("/v1/jobs/{job}/main-result"),
@@ -271,15 +361,19 @@ async fn run_command(
     .await?;
 
     procinfo::refresh(&mut family, pgid);
-    while !family.is_empty() {
+    while family.members().iter().any(|member| member.pid != pgid) {
         tokio::select! {
             _ = poll.tick() => procinfo::refresh(&mut family, pgid),
             () = &mut cancel => {
                 stop_family(pgid, &mut family).await;
                 post(&paths, &format!("/v1/jobs/{job}/finished"), ended(JobState::Canceled, Some(main))).await?;
-                return Ok(());
+                return logs;
             }
         }
+    }
+    if leader.stdin.is_some() {
+        drop(leader.stdin.take());
+        leader.wait().await?;
     }
     post(
         &paths,
@@ -287,7 +381,21 @@ async fn run_command(
         ended(JobState::Completed, Some(main)),
     )
     .await?;
-    Ok(())
+    logs
+}
+
+async fn report_start_failure(paths: &Paths, job: &str, dir: &Path, error: &str) -> Result<()> {
+    let written = std::fs::write(
+        dir.join("stderr.log"),
+        format!("ats: could not start the command: {error}\n"),
+    );
+    post(
+        paths,
+        &format!("/v1/jobs/{job}/finished"),
+        FinishedRequest::new(JobState::StartFailed, Some(127), None),
+    )
+    .await?;
+    written.context("writing the command startup error")
 }
 
 fn ended(state: JobState, exit_code: Option<i64>) -> FinishedRequest {
@@ -417,6 +525,47 @@ mod tests {
             source: source.into(),
             shell: "/bin/sh".into(),
         }
+    }
+
+    #[tokio::test]
+    async fn a_failed_log_still_drains_output_and_preserves_the_exit_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = test_paths(dir.path());
+        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+        let daemon = tokio::spawn(daemon::run(paths.clone(), async {
+            let _ = stop_rx.await;
+        }));
+        wait_for_socket(&paths).await;
+
+        let (_, id) = submit(&paths, "generate output").await;
+        let logs = paths.logs.join(&id);
+        std::fs::create_dir_all(logs.join("stdout.log")).unwrap();
+        let spec = sh("dd if=/dev/zero bs=65536 count=8; echo drained >&2; exit 9");
+        let error = tokio::time::timeout(
+            Duration::from_secs(10),
+            run(paths.clone(), id.clone(), spec, "/".into()),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert!(error.to_string().contains("stdout.log"));
+        let row = terminal_job(&paths, &id).await;
+        assert_eq!(row["state"], "completed");
+        assert_eq!(row["main_exit_code"], 9);
+        assert_eq!(row["exit_code"], 9);
+        assert!(
+            std::fs::read_to_string(logs.join("stderr.log"))
+                .unwrap()
+                .contains("drained")
+        );
+        assert!(
+            std::fs::read_to_string(logs.join("capture-errors.log"))
+                .unwrap()
+                .contains("stdout.log")
+        );
+
+        stop_tx.send(()).unwrap();
+        daemon.await.unwrap().unwrap();
     }
 
     #[tokio::test]
@@ -653,7 +802,7 @@ mod tests {
             .command(),
         );
         let task = tokio::spawn(async move {
-            run_command(&paths, "j_gate", cmd, Path::new("/"), &paths.home).await
+            run_command(&paths, "j_gate", cmd, None, Path::new("/"), &paths.home).await
         });
         let pgid = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await

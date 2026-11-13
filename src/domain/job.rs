@@ -259,6 +259,8 @@ pub struct ActiveJob {
     pub state: JobState,
     pub executor: Option<(i64, String)>,
     pub pgid: Option<i64>,
+    pub pgid_start: Option<String>,
+    pub launched: Option<(i64, String)>,
     pub launcher: Option<(i64, String)>,
     pub main_exit_code: Option<i64>,
     pub canceled: bool,
@@ -277,6 +279,7 @@ pub struct SubmitCommand {
     pub now: bool,
     pub locks: Vec<String>,
     pub hint: Option<String>,
+    pub cargo_env: crate::domain::resource::CargoEnv,
 }
 
 #[cfg(test)]

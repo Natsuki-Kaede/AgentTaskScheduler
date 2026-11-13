@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
+use crate::domain::resource::CargoEnv;
 use crate::profile::{Class, Profiles, Writes, positionals};
 use shell::{Ast, Redirect, Sep, Simple, Word};
 
@@ -30,6 +31,8 @@ pub struct Segment {
     pub redirect_writes: Vec<String>,
     pub interactive: bool,
     pub service: bool,
+    #[serde(skip)]
+    pub cargo_env: CargoEnv,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -60,6 +63,7 @@ impl<'a> Recognizer<'a> {
             cwd: cwd.to_path_buf(),
             segments: Vec::new(),
             depth: 0,
+            cargo_env: CargoEnv::default(),
         };
         let structure = shell::parse(source).and_then(|ast| run.ast(&ast, &[]));
         run.finish(structure)
@@ -71,6 +75,7 @@ impl<'a> Recognizer<'a> {
             cwd: cwd.to_path_buf(),
             segments: Vec::new(),
             depth: 0,
+            cargo_env: CargoEnv::default(),
         };
         let words: Vec<Word> = argv
             .iter()
@@ -89,6 +94,7 @@ struct Run<'r, 'a> {
     cwd: PathBuf,
     segments: Vec<Segment>,
     depth: usize,
+    cargo_env: CargoEnv,
 }
 
 type Res = Result<Node, shell::Unclear>;
@@ -170,7 +176,15 @@ impl Run<'_, '_> {
             before.push(self.scoped(|run| run.ast(sub, &[]))?);
         }
         let redirects: Vec<Redirect> = inherited.iter().chain(&s.redirects).cloned().collect();
-        let mut main = self.command(s.words.clone(), &redirects)?;
+        let previous_env = self.cargo_env.clone();
+        self.set_cargo_env(
+            s.assigns
+                .iter()
+                .map(|(name, value)| (name.as_str(), value.text.as_str(), value.dynamic)),
+        );
+        let main = self.command(s.words.clone(), &redirects);
+        self.cargo_env = previous_env;
+        let mut main = main?;
         if !s.processes.is_empty() {
             let mut items = vec![main];
             for p in &s.processes {
@@ -192,7 +206,18 @@ impl Run<'_, '_> {
             }
             let prog = basename(&first.text);
             let rest = match prog.as_str() {
-                "env" => skip_env(&words[1..]),
+                "env" => {
+                    let rest = skip_env(&words[1..]);
+                    if let Some(rest) = &rest {
+                        self.set_cargo_env(words[1..words.len() - rest.len()].iter().filter_map(
+                            |word| {
+                                let (name, value) = word.text.split_once('=')?;
+                                Some((name, value, word.dynamic))
+                            },
+                        ));
+                    }
+                    rest
+                }
                 "time" | "nohup" | "exec" => skip_flags(&words[1..], &[]),
                 "nice" => skip_flags(&words[1..], &["-n"]),
                 "command" if !words[1..].iter().any(|w| w.text == "-v" || w.text == "-V") => {
@@ -280,9 +305,25 @@ impl Run<'_, '_> {
 
     fn scoped(&mut self, f: impl FnOnce(&mut Self) -> Res) -> Res {
         let cwd = self.cwd.clone();
+        let cargo_env = self.cargo_env.clone();
         let result = f(self);
         self.cwd = cwd;
+        self.cargo_env = cargo_env;
         result
+    }
+
+    fn set_cargo_env<'a>(&mut self, values: impl IntoIterator<Item = (&'a str, &'a str, bool)>) {
+        for (name, value, dynamic) in values {
+            let target = match name {
+                "CARGO_TARGET_DIR" => &mut self.cargo_env.target_dir,
+                "CARGO_BUILD_TARGET_DIR" => &mut self.cargo_env.build_target_dir,
+                "CARGO_HOME" => &mut self.cargo_env.home,
+                _ => continue,
+            };
+            if !dynamic {
+                *target = Some(value.to_owned());
+            }
+        }
     }
 
     fn package_script(
@@ -380,6 +421,7 @@ impl Run<'_, '_> {
                 redirect_writes,
                 interactive: false,
                 service: false,
+                cargo_env: CargoEnv::default(),
             },
             (false, p) => {
                 let value_flags = p.map(|p| p.value_flags.as_slice()).unwrap_or_default();
@@ -398,6 +440,7 @@ impl Run<'_, '_> {
                         p.interactive || (p.interactive_without_args && argv.len() == 1)
                     }),
                     service: p.is_some_and(|p| p.service),
+                    cargo_env: self.cargo_env.clone(),
                     argv,
                 }
             }

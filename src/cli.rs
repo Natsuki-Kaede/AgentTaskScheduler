@@ -5,12 +5,12 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
 use crate::client::{self, Answer};
 use crate::domain::job::{Created, Entry, JobState, WaitUntil};
-use crate::domain::resource::{Reason, Verdict};
+use crate::domain::resource::{CargoEnv, Reason, Verdict};
 use crate::executor;
 use crate::paths::Paths;
 use crate::procinfo;
@@ -138,8 +138,15 @@ fn print_output(sub: &Submission) -> Result<()> {
         std::io::stdout().write_all(&read_log(dir, "stdout.log"))?;
         std::io::stdout().flush()?;
         std::io::stderr().write_all(&read_log(dir, "stderr.log"))?;
+        print_capture_errors(dir);
     }
     Ok(())
+}
+
+fn print_capture_errors(dir: &Path) {
+    if let Ok(errors) = std::fs::read_to_string(dir.join("capture-errors.log")) {
+        eprintln!("[ats] output may be incomplete: {errors}");
+    }
 }
 
 fn print_tails(log_path: Option<&str>) {
@@ -187,6 +194,11 @@ pub async fn run(
         now: options.now,
         lock: options.lock,
         hint: options.hint,
+        cargo_env: CargoEnv {
+            target_dir: std::env::var("CARGO_TARGET_DIR").ok(),
+            build_target_dir: std::env::var("CARGO_BUILD_TARGET_DIR").ok(),
+            home: std::env::var("CARGO_HOME").ok(),
+        },
     })?;
     let (answer, _) = client::call(paths, "POST", "/v1/jobs", Some(body)).await?;
     if matches!(answer.status, 400 | 409) {
@@ -195,21 +207,35 @@ pub async fn run(
     }
     let created: Created = serde_json::from_value(expect_ok(answer)?)?;
     let (submission, job) = (&created.submission, &created.job);
+    run_accepted(paths, &spec, &cwd, wait, &created)
+        .await
+        .with_context(|| {
+            format!("[ats] submission {submission} job {job} was accepted; check with: ats wait {submission}")
+        })
+}
 
-    match executor::spawn_detached(paths, job, &spec, &cwd) {
+async fn run_accepted(
+    paths: &Paths,
+    spec: &RunSpec,
+    cwd: &Path,
+    wait: Option<Duration>,
+    created: &Created,
+) -> Result<ExitCode> {
+    let (submission, job) = (&created.submission, &created.job);
+    match executor::spawn_detached(paths, job, spec, cwd) {
         Ok(pid) => {
             if let Some(start) = procinfo::start_time(pid) {
                 let body = serde_json::to_value(ExecutorRequest {
                     pid: i64::from(pid),
                     start,
                 })?;
-                client::call(
+                let _ = client::call(
                     paths,
                     "POST",
                     &format!("/v1/jobs/{job}/executor"),
                     Some(body),
                 )
-                .await?;
+                .await;
             }
         }
         Err(e) => {
@@ -218,7 +244,8 @@ pub async fn run(
                 &format!("/v1/jobs/{job}/finished"),
                 FinishedRequest::new(JobState::StartFailed, None, None),
             )
-            .await?;
+            .await
+            .with_context(|| format!("could not start the executor: {e:#}"))?;
             return Err(e);
         }
     }
@@ -226,6 +253,9 @@ pub async fn run(
     let (reached, sub) = wait_for(paths, submission, WaitUntil::Main, wait).await?;
     if sub.job_state == JobState::Blocked {
         return blocked(paths, &sub).await;
+    }
+    if sub.job_state == JobState::CapacityInsufficient {
+        return Ok(report_capacity(&sub));
     }
     if reached {
         if sub.job_state.terminal() {
@@ -266,18 +296,17 @@ fn terminal_exit_code(sub: &Submission) -> ExitCode {
     }
 }
 
-fn report_terminal(sub: &Submission) -> ExitCode {
+fn report_terminal(sub: &Submission) {
     eprintln!("{}", terminal_line(sub));
     if failed(sub) {
         print_tails(sub.log_path.as_deref());
     }
-    terminal_exit_code(sub)
 }
 
 async fn blocked(paths: &Paths, sub: &Submission) -> Result<ExitCode> {
     let job = &sub.job;
-    let why: WhyResponse = get(paths, &format!("/v1/jobs/{job}/why")).await?;
-    let predecessor = match &why.verdict {
+    let why: Option<WhyResponse> = get(paths, &format!("/v1/jobs/{job}/why")).await.ok();
+    let predecessor = match why.as_ref().and_then(|why| why.verdict.as_ref()) {
         Some(Verdict::Blocked { job }) => job.as_str(),
         _ => "a predecessor",
     };
@@ -285,14 +314,24 @@ async fn blocked(paths: &Paths, sub: &Submission) -> Result<ExitCode> {
         "[ats] submission {} job {job} did not run: {predecessor} failed. Run `ats unblock {job}` to run it anyway, or `ats cancel {}`.",
         sub.id, sub.id,
     );
-    delivered(paths, sub).await;
     Ok(ExitCode::from(EXIT_BLOCKED))
+}
+
+fn report_capacity(sub: &Submission) -> ExitCode {
+    eprintln!(
+        "[ats] submission {} job {} is capacity_insufficient. Use `ats why {}` for the memory estimate. Cancel with `ats cancel {}` and resubmit with work that fits the budget.",
+        sub.id, sub.job, sub.id, sub.id,
+    );
+    ExitCode::from(EXIT_DETACHED)
 }
 
 pub async fn wait(paths: &Paths, submission: &str, wait: Option<Duration>) -> Result<ExitCode> {
     let (reached, sub) = wait_for(paths, submission, WaitUntil::Terminal, wait).await?;
     if sub.job_state == JobState::Blocked {
         return blocked(paths, &sub).await;
+    }
+    if sub.job_state == JobState::CapacityInsufficient {
+        return Ok(report_capacity(&sub));
     }
     if reached {
         print_output(&sub)?;
@@ -359,6 +398,9 @@ pub async fn logs(paths: &Paths, id: &str, follow: bool) -> Result<ExitCode> {
             eprintln!("[ats] job {job} is {state} and has no log yet");
         }
         if !follow || done {
+            if let Some(dir) = &dir {
+                print_capture_errors(dir);
+            }
             return Ok(ExitCode::SUCCESS);
         }
         tokio::time::sleep(FOLLOW_POLL).await;
@@ -374,6 +416,11 @@ pub async fn mark(paths: &Paths, submission: &str, action: &str) -> Result<ExitC
     .await?;
     let sub: Submission = get(paths, &format!("/v1/submissions/{submission}")).await?;
     eprintln!("{}", status_line(&sub));
+    if action == "detach" && !sub.job_state.terminal() {
+        eprintln!(
+            "[ats] detached: reminders arrive at a later agent turn; this does not wake a stopped agent. Keep using `ats wait {submission}` if the current goal needs its result."
+        );
+    }
     Ok(ExitCode::SUCCESS)
 }
 
@@ -396,7 +443,7 @@ fn explain(v: &Verdict) -> String {
             format!("predecessor {job} failed; `ats unblock` runs it anyway")
         }
         Verdict::CapacityInsufficient { need, budget } => format!(
-            "it is predicted to need {}, more than the memory budget of {}; cancel it, give a lower --hint, or run it with --now",
+            "it is predicted to need {}, more than the memory budget of {}; cancel it and resubmit with work that fits the budget",
             gib(*need as f64),
             gib(*budget as f64)
         ),
@@ -405,7 +452,7 @@ fn explain(v: &Verdict) -> String {
                 "the daemon restarted and is waiting for running jobs to reconnect".into()
             }
             Reason::ResourceUnavailable => {
-                "its execution memory limits could not be read; waiting for a fresh observation"
+                "its execution memory limits could not be read; Linux requires visible cgroup v2 membership and mounts"
                     .into()
             }
             Reason::Pressure => "memory pressure is rising, so nothing new is admitted".into(),

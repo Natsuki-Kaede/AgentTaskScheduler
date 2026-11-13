@@ -36,14 +36,15 @@ impl Family {
                 start: start.clone(),
             })
         });
-        let executor = executor.filter(|e| {
+        let executor = executor.and_then(|e| {
             table
                 .processes
                 .iter()
-                .any(|p| p.pid == e.pid && p.start == e.start)
+                .find(|p| p.pid == e.pid && p.start == e.start)
         });
+        let session = executor.filter(|p| p.session == Some(p.pid)).map(|p| p.pid);
         for p in &table.processes {
-            if pgid == Some(p.pgid) || executor.is_some_and(|e| p.ppid == e.pid) {
+            if executor.is_some_and(|e| p.ppid == e.pid) {
                 let identity = p.identity();
                 self.members.insert(identity.pid, identity.start);
             }
@@ -54,6 +55,18 @@ impl Family {
             .filter(|p| self.members.get(&p.pid) == Some(&p.start))
             .map(|p| p.pid)
             .collect();
+        let group_confirmed = table
+            .processes
+            .iter()
+            .any(|p| pgid == Some(p.pgid) && confirmed.contains(&p.pid));
+        for p in &table.processes {
+            if pgid == Some(p.pgid)
+                && (group_confirmed || session.is_some_and(|id| p.session == Some(id)))
+            {
+                self.members.insert(p.pid, p.start.clone());
+                confirmed.insert(p.pid);
+            }
+        }
         loop {
             let mut added = false;
             for p in &table.processes {
@@ -86,12 +99,14 @@ mod tests {
             pid: 11,
             ppid: 10,
             pgid: 99,
+            session: None,
             start: "child".into(),
         };
         let grandchild = Process {
             pid: 12,
             ppid: 11,
             pgid: 99,
+            session: None,
             start: "grandchild".into(),
         };
         for (name, parent, uncertain, expected) in [
@@ -115,6 +130,7 @@ mod tests {
                     pid: 10,
                     ppid: 1,
                     pgid: 99,
+                    session: None,
                     start: start.into(),
                 });
             }
@@ -146,12 +162,14 @@ mod tests {
                     pid: 11,
                     ppid: 10,
                     pgid: 99,
+                    session: None,
                     start: "child".into(),
                 },
                 Process {
                     pid: 12,
                     ppid: 11,
                     pgid: 99,
+                    session: None,
                     start: "grandchild".into(),
                 },
             ],
@@ -169,13 +187,14 @@ mod tests {
             pid,
             ppid,
             pgid,
+            session: None,
             start: start.into(),
         };
         let table = |processes| ProcessTable {
             processes,
             ..ProcessTable::default()
         };
-        let mut family = Family::default();
+        let mut family = Family::from_members([p(10, 1, 10, "a").identity()]);
         family.observe(
             Some(10),
             None,
@@ -186,7 +205,12 @@ mod tests {
         restored.observe(
             Some(10),
             None,
-            &table(vec![p(11, 1, 11, "b"), p(12, 11, 12, "c")]),
+            &table(vec![
+                p(10, 1, 10, "unrelated leader"),
+                p(13, 10, 10, "unrelated child"),
+                p(11, 1, 11, "b"),
+                p(12, 11, 12, "c"),
+            ]),
         );
         assert_eq!(
             restored.members().iter().map(|p| p.pid).collect::<Vec<_>>(),
@@ -210,5 +234,84 @@ mod tests {
         );
         restored.observe(Some(10), None, &ProcessTable::default());
         assert!(restored.is_empty());
+    }
+
+    #[test]
+    fn an_in_group_anchor_allows_reparented_group_members() {
+        let leader = Process {
+            pid: 10,
+            ppid: 1,
+            pgid: 10,
+            session: None,
+            start: "leader".into(),
+        };
+        let child = Process {
+            pid: 11,
+            ppid: 1,
+            pgid: 10,
+            session: None,
+            start: "worker".into(),
+        };
+        let mut family = Family::from_members([leader.identity()]);
+        family.observe(
+            Some(10),
+            None,
+            &ProcessTable {
+                processes: vec![leader, child.clone()],
+                ..Default::default()
+            },
+        );
+        let mut restored = Family::from_members(family.members());
+        let another = Process {
+            pid: 12,
+            start: "another worker".into(),
+            ..child.clone()
+        };
+        restored.observe(
+            Some(10),
+            None,
+            &ProcessTable {
+                processes: vec![child, another],
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            restored.members().iter().map(|p| p.pid).collect::<Vec<_>>(),
+            [11, 12]
+        );
+    }
+
+    #[test]
+    fn a_live_executor_session_anchors_a_group_without_a_live_leader() {
+        let executor = Process {
+            pid: 10,
+            ppid: 1,
+            pgid: 10,
+            session: Some(10),
+            start: "executor".into(),
+        };
+        let child = Process {
+            pid: 21,
+            ppid: 1,
+            pgid: 20,
+            session: Some(10),
+            start: "worker".into(),
+        };
+        for same_executor in [true, false] {
+            let mut actual = executor.clone();
+            if !same_executor {
+                actual.start = "reused".into();
+            }
+            let mut family = Family::default();
+            family.observe(
+                Some(20),
+                Some(&executor.identity()),
+                &ProcessTable {
+                    processes: vec![actual, child.clone()],
+                    ..Default::default()
+                },
+            );
+            assert_eq!(family.is_empty(), !same_executor);
+        }
     }
 }

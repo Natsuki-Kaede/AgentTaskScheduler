@@ -8,6 +8,8 @@ pub type Memberships = BTreeMap<String, Vec<ProcessIdentity>>;
 pub struct ProcessRoot {
     pub id: String,
     pub pgid: Option<i32>,
+    pub leader: Option<ProcessIdentity>,
+    pub launched: Option<ProcessIdentity>,
     pub executor: Option<ProcessIdentity>,
 }
 
@@ -29,6 +31,7 @@ pub struct Process {
     pub pid: i32,
     pub ppid: i32,
     pub pgid: i32,
+    pub session: Option<i32>,
     pub start: String,
 }
 

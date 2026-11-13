@@ -39,10 +39,11 @@ impl Processes for System {
             return false;
         };
         job.state.pre_lease()
-            || observation
-                .roots
-                .get(&job.id)
-                .is_some_and(|root| root.pgid.map(i64::from) == job.pgid)
+            || observation.roots.get(&job.id).is_some_and(|root| {
+                root.pgid.map(i64::from) == job.pgid
+                    && root.launched.as_ref().map(|p| (i64::from(p.pid), &p.start))
+                        == job.launched.as_ref().map(|(pid, start)| (*pid, start))
+            })
     }
 
     fn alive(&self, pid: i64, start: &str) -> bool {
@@ -93,7 +94,7 @@ pub fn check(job: &ActiveJob, procs: &impl Processes) -> Option<Action> {
         ));
     }
     if alive(&job.executor, procs) {
-        return None;
+        return (job.canceled && !procs.members(job).is_empty()).then_some(Action::Terminate);
     }
     if job.state.pre_lease() {
         let starter_gone =
@@ -129,11 +130,17 @@ pub fn live_executors(state: &App, procs: &impl Processes) -> Result<Vec<String>
 }
 
 const TERM_GRACE: Duration = Duration::from_secs(5);
+const EXECUTOR_CANCEL_GRACE: Duration = Duration::from_millis(750);
+
+pub(crate) struct Termination {
+    observed_at: Duration,
+    signaled_at: Option<Duration>,
+}
 
 pub fn sweep(
     state: &App,
     procs: &impl Processes,
-    terminating: &mut HashMap<String, Duration>,
+    terminating: &mut HashMap<String, Termination>,
 ) -> Result<()> {
     let jobs = state.store().active_jobs()?;
     terminating.retain(|id, _| jobs.iter().any(|j| &j.id == id));
@@ -145,15 +152,21 @@ pub fn sweep(
         let applied = match &action {
             Action::Terminate => {
                 let now = timing::elapsed();
-                match terminating.get(&job.id) {
-                    None => {
+                let term = terminating.entry(job.id.clone()).or_insert(Termination {
+                    observed_at: now,
+                    signaled_at: None,
+                });
+                match term.signaled_at {
+                    None if !alive(&job.executor, procs)
+                        || now.saturating_sub(term.observed_at) >= EXECUTOR_CANCEL_GRACE =>
+                    {
                         procs.terminate(&job, false);
-                        terminating.insert(job.id.clone(), now);
+                        term.signaled_at = Some(now);
                     }
-                    Some(&asked) if now.saturating_sub(asked) >= TERM_GRACE => {
+                    Some(asked) if now.saturating_sub(asked) >= TERM_GRACE => {
                         procs.terminate(&job, true)
                     }
-                    Some(_) => {}
+                    _ => {}
                 }
                 continue;
             }
@@ -212,6 +225,8 @@ mod tests {
             state: state.parse().unwrap(),
             executor: Some((10, "s".into())),
             pgid: None,
+            pgid_start: None,
+            launched: None,
             launcher: Some((20, "s".into())),
             main_exit_code: None,
             canceled: false,
@@ -319,6 +334,7 @@ mod tests {
             Some(Action::Finish(JobState::Canceled, None))
         );
         j.state = crate::domain::job::JobState::Running;
+        assert_eq!(check(&j, &fake(&[10], &[30])), Some(Action::Terminate));
         assert_eq!(
             check(&j, &fake(&[], &[30])),
             Some(Action::AwaitTakeover),

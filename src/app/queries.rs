@@ -42,6 +42,9 @@ impl App {
                 .lock()
                 .expect("verdicts lock")
                 .get(id)
+                .filter(|verdict| {
+                    !matches!(verdict, Verdict::Blocked { .. }) || row.state == JobState::Blocked
+                })
                 .cloned(),
         ))
     }
@@ -51,5 +54,39 @@ impl App {
     }
     pub fn take_ended_reminders(&self, session: &str) -> Result<Vec<Reminder>> {
         self.store().take_ended_reminders(session)
+    }
+    pub fn take_attention_reminders(&self, session: &str) -> Result<Vec<Reminder>> {
+        self.store().take_attention_reminders(session)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn concurrent_hooks_share_one_attention_receipt() {
+        let mut store = crate::store::Store::open_in_memory().unwrap();
+        let created = store
+            .create_submission(&crate::store::tests::sample("make"))
+            .unwrap();
+        store
+            .set_queue_state(&created.job, JobState::Blocked)
+            .unwrap();
+        let app = App::new(store, "start".into(), "instance".into());
+        let barrier = std::sync::Barrier::new(2);
+        let delivered: usize = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..2)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        app.take_attention_reminders("sess").unwrap().len()
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).sum()
+        });
+        assert_eq!(delivered, 1);
+        assert!(!app.submission(&created.submission).unwrap().quiet);
     }
 }

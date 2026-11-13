@@ -3,6 +3,7 @@ pub mod locks;
 pub mod predict;
 use crate::domain::error::InvalidInput;
 use crate::domain::job::Plan;
+use crate::domain::resource::CargoEnv;
 use crate::profile::Profiles;
 use crate::recognize::Analysis;
 use predict::{Defaults, Lookup, Stats, line_key, parse_hint, predict};
@@ -14,6 +15,7 @@ pub fn plan(
     cwd: &Path,
     extra_locks: &[String],
     hint: Option<&str>,
+    cargo_env: &CargoEnv,
     history: &impl Fn(Lookup) -> Stats,
 ) -> Result<Plan, InvalidInput> {
     let hint = hint
@@ -21,7 +23,7 @@ pub fn plan(
         .transpose()
         .map_err(|e| InvalidInput(format!("--hint: {e}")))?;
     let prediction = predict(analysis, profiles, &Defaults::default(), hint, history);
-    let locks = locks::for_line(analysis, cwd, profiles, extra_locks);
+    let locks = locks::for_line(analysis, cwd, profiles, extra_locks, cargo_env);
     let (parallel_env, jobserver) = parallelism(analysis, profiles);
     let mut names: Vec<String> = analysis
         .segments

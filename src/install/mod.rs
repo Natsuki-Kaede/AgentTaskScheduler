@@ -1,8 +1,10 @@
 //! Manages agent instructions, reminder hooks and the daemon login service.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, Write};
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -19,6 +21,14 @@ pub enum Confirm<'a> {
     Ask(&'a mut dyn BufRead),
     DryRun,
     Yes,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Service {
+    #[cfg(test)]
+    Skip,
+    Ensure,
+    Restart,
 }
 
 const BEGIN: &str = "<!-- ats:begin -->";
@@ -40,7 +50,9 @@ Write it as `ats run -- <program> <args>` or `ats run --sh '<shell command>'`. P
 Run other commands directly: `ls`, `cat`, `cd`, `mkdir`, `cp`, `mv`, `git status`, `git diff`, small `git` operations, `grep` or `rg` in a small tree, `ping`, version and help output, editors and other interactive commands, and servers that do not stop.
 
 - When the command ends in 90 seconds or less, ats gives its output and exit code unchanged.
-- Exit code 75 and an `[ats] submission ...` line: the command continues in the background. Run `ats wait <submission>` to get its output and exit code. Each call waits for up to 90 seconds. If you do not need the result now, run `ats detach <submission>`. You are told at your next turn when it ends.
+- Exit code 75 and an `[ats] submission ...` line: read the job state. While it is running or queued and can progress, use `ats wait <submission>` to get its output and exit code. Each call waits for up to 90 seconds. Repeat while your current goal needs the result and the job can progress. `ats detach <submission>` allows this turn to end and reports results or blocked work at a later turn; it does not wake a stopped agent. Detach only when deferring progress until another user turn is acceptable.
+- A `capacity_insufficient` job exceeds the current memory budget. Use `ats why <submission>` to see the estimate and limit, then reduce the workload or cancel it. Repeated waiting cannot fix an unchanged capacity limit.
+- A `blocked` job cannot start because a predecessor failed. Inspect `ats why <submission>` and the predecessor's result, resolve the failure, then choose `ats unblock <submission>` or `ats cancel <submission>`. Repeated waiting does not repair a failed dependency.
 - Interpret 76 as an `--after` predecessor failure, 77 as rejection and 78 as an ats failure only when ats's diagnostic output confirms that cause. Completed commands return their own exit codes unchanged and may use the same numbers.
 - Run `ats why <submission>` to see why a command waits. Do not use `ats run --now` unless the user asks to run something immediately.";
 
@@ -58,6 +70,8 @@ pub struct Moved {
 pub struct Record {
     #[serde(default)]
     pub agents: BTreeMap<String, Vec<Moved>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    dsh_relinks: BTreeMap<PathBuf, BTreeSet<String>>,
 }
 
 impl Record {
@@ -319,25 +333,92 @@ pub fn install<W: Write>(
     dsh: &DshConfig<'_>,
     agents: &[Agent],
     ats: &Path,
-    start: bool,
+    service: Service,
     confirm: Confirm,
     out: &mut W,
-) -> Result<()> {
+) -> Result<bool> {
+    #[cfg(test)]
+    if service == Service::Skip {
+        return install_with(
+            paths,
+            home,
+            dsh,
+            agents,
+            ats,
+            false,
+            None::<fn(bool, &mut W) -> Result<()>>,
+            confirm,
+            out,
+        );
+    }
     install_with(
         paths,
         home,
         dsh,
         agents,
         ats,
-        start.then_some(|changed, out: &mut W| {
+        service == Service::Restart,
+        Some(|restart, out: &mut W| {
             if agents.contains(&Agent::Dsh) {
                 dsh::link(dsh, out)?;
             }
-            service::load(home, changed, out)
+            service::load(home, restart, out)
         }),
         confirm,
         out,
     )
+}
+
+pub async fn daemon_instance(paths: &Paths) -> Option<String> {
+    daemon_health(paths)
+        .await
+        .ok()
+        .map(|health| health.instance)
+}
+
+async fn daemon_health(paths: &Paths) -> Result<crate::protocol::Health> {
+    let (answer, _) =
+        crate::client::call_with_timeout(paths, "GET", "/v1/health", None, Duration::from_secs(1))
+            .await?;
+    if answer.status != 200 {
+        bail!("health endpoint answered {}", answer.status);
+    }
+    Ok(serde_json::from_value(answer.body)?)
+}
+
+pub async fn verify_daemon(paths: &Paths, previous: Option<&str>) -> Result<()> {
+    verify_health(previous, || daemon_health(paths), Duration::from_secs(10)).await
+}
+
+async fn verify_health(
+    previous: Option<&str>,
+    mut probe: impl AsyncFnMut() -> Result<crate::protocol::Health>,
+    timeout: Duration,
+) -> Result<()> {
+    let deadline = crate::timing::Deadline::after(Some(timeout));
+    let expected = env!("CARGO_PKG_VERSION");
+    loop {
+        let error = match probe().await {
+            Ok(health) if previous == Some(health.instance.as_str()) => {
+                anyhow::anyhow!("the previous daemon instance is still responding")
+            }
+            Ok(health) if health.version != expected && previous.is_none() => {
+                bail!(
+                    "daemon is running ats {}; this binary is {expected}. After draining active jobs and backing up the database, rerun ats install with --restart",
+                    health.version
+                );
+            }
+            Ok(health) if health.version != expected => {
+                anyhow::anyhow!("daemon reports ats {}, expected {expected}", health.version)
+            }
+            Ok(_) => return Ok(()),
+            Err(error) => error,
+        };
+        if deadline.expired() {
+            return Err(error).context("the daemon login service did not become ready");
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -347,10 +428,11 @@ fn install_with<W: Write>(
     dsh: &DshConfig<'_>,
     agents: &[Agent],
     ats: &Path,
+    restart: bool,
     start: Option<impl FnOnce(bool, &mut W) -> Result<()>>,
     confirm: Confirm,
     out: &mut W,
-) -> Result<()> {
+) -> Result<bool> {
     let mut record = Record::load(paths)?;
     let mut changes = Vec::new();
     let mut notes = Vec::new();
@@ -421,16 +503,20 @@ fn install_with<W: Write>(
     }
     let unchanged = changes.iter().all(|c| c.old == c.new);
     let dry_run = matches!(&confirm, Confirm::DryRun);
-    let approved = review(changes, confirm, out)?;
-    if let Some(changes) = &approved {
+    let action = restart.then_some("Restart the daemon login service.");
+    let approved = review(changes, action, confirm, out)?;
+    if let Some(changes) = &approved
+        && !changes.is_empty()
+    {
         write(paths, changes, &record, out)?;
     }
     if let Some(start) = start
-        && (approved.is_some() || (unchanged && !dry_run))
+        && (approved.is_some() || (unchanged && !restart && !dry_run))
     {
-        start(changed, out)?;
+        start(changed || restart, out)?;
+        return Ok(true);
     }
-    Ok(())
+    Ok(false)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -444,21 +530,48 @@ pub fn uninstall(
     confirm: Confirm,
     out: &mut impl Write,
 ) -> Result<()> {
+    uninstall_with(
+        paths,
+        home,
+        dsh,
+        agents,
+        all,
+        start.then_some(|home: &Path| service::unload(home)),
+        |home, profile, out| dsh::link_profile(home, profile, out),
+        confirm,
+        out,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn uninstall_with<W: Write>(
+    paths: &Paths,
+    home: &Path,
+    dsh: &DshConfig<'_>,
+    agents: &[Agent],
+    all: bool,
+    unload: Option<impl FnOnce(&Path) -> Result<()>>,
+    mut link: impl FnMut(&Path, &str, &mut W) -> Result<()>,
+    confirm: Confirm,
+    out: &mut W,
+) -> Result<()> {
     let mut record = Record::load(paths)?;
     let mut changes = Vec::new();
-    for &agent in agents {
-        if agent == Agent::Dsh {
-            changes.extend(dsh::uninstall(home, dsh)?);
-            continue;
-        }
+    let profiles = if all || agents.contains(&Agent::Dsh) {
+        let (dsh_changes, profiles) = dsh::uninstall(home, dsh, all)?;
+        changes.extend(dsh_changes);
+        profiles
+    } else {
+        BTreeSet::new()
+    };
+    for &agent in agents.iter().filter(|&&agent| agent != Agent::Dsh) {
         let (hooks_file, instructions) = files(home, agent);
         if let Some(old) = read(&hooks_file)? {
             let mut doc = parse(&hooks_file, Some(&old))?;
             remove_ats(&mut doc, agent);
-            restore(
-                &mut doc,
-                &record.agents.remove(name(agent)).unwrap_or_default(),
-            );
+            if let Some(moved) = record.agents.get(name(agent)) {
+                restore(&mut doc, moved);
+            }
             let new = (doc != json!({})).then(|| json_text(&doc));
             changes.push(Change {
                 path: hooks_file,
@@ -487,20 +600,61 @@ pub fn uninstall(
         }
     }
     let service = service::file(home);
-    if all && let Some(old) = read(&service)? {
+    let old_service = if all { read(&service)? } else { None };
+    let remove_service = old_service.is_some();
+    if let Some(old) = old_service {
         changes.push(Change {
             path: service,
             old: Some(old),
             new: None,
         });
     }
-    if let Some(changes) = review(changes, confirm, out)? {
-        if all && start {
-            service::unload(home)?;
+    let mut relinks: BTreeSet<String> = record
+        .dsh_relinks
+        .get(&dsh.home)
+        .into_iter()
+        .flatten()
+        .filter(|profile| all || (agents.contains(&Agent::Dsh) && profile.as_str() == dsh.profile))
+        .cloned()
+        .collect();
+    relinks.extend(profiles);
+    let manage_services = unload.is_some();
+    let action = (manage_services && !relinks.is_empty()).then(|| {
+        format!(
+            "Refresh DSH package links for {}.",
+            relinks.iter().cloned().collect::<Vec<_>>().join(", ")
+        )
+    });
+    if let Some(changes) = review(changes, action.as_deref(), confirm, out)? {
+        if remove_service && let Some(unload) = unload {
+            unload(home)?;
         }
-        write(paths, &changes, &record, out)?;
-        if start && agents.contains(&Agent::Dsh) {
-            dsh::link(dsh, out)?;
+        if !changes.is_empty() {
+            if manage_services && !relinks.is_empty() {
+                record
+                    .dsh_relinks
+                    .entry(dsh.home.clone())
+                    .or_default()
+                    .extend(relinks.iter().cloned());
+                private_dir(&paths.home)?;
+                write_record(paths, &record)?;
+            }
+            for agent in agents {
+                record.agents.remove(name(*agent));
+            }
+            write(paths, &changes, &record, out)?;
+        }
+        if manage_services {
+            for profile in relinks {
+                link(&dsh.home, &profile, out)?;
+                if let Some(pending) = record.dsh_relinks.get_mut(&dsh.home) {
+                    pending.remove(&profile);
+                    if pending.is_empty() {
+                        record.dsh_relinks.remove(&dsh.home);
+                    }
+                }
+                write_record(paths, &record)?;
+            }
         }
     }
     Ok(())
@@ -508,11 +662,12 @@ pub fn uninstall(
 
 fn review(
     changes: Vec<Change>,
+    action: Option<&str>,
     confirm: Confirm,
     out: &mut impl Write,
 ) -> Result<Option<Vec<Change>>> {
     let changes: Vec<Change> = changes.into_iter().filter(|c| c.old != c.new).collect();
-    if changes.is_empty() {
+    if changes.is_empty() && action.is_none() {
         writeln!(out, "Nothing to change.")?;
         return Ok(None);
     }
@@ -529,8 +684,19 @@ fn review(
             writeln!(out, "{} will be removed.", c.path.display())?;
         }
     }
+    if let Some(action) = action {
+        writeln!(out, "{action}")?;
+    }
     let agreed = match confirm {
-        Confirm::Ask(input) => ask(input, out, "Write these changes?")?,
+        Confirm::Ask(input) => ask(
+            input,
+            out,
+            if changes.is_empty() {
+                "Proceed?"
+            } else {
+                "Write these changes?"
+            },
+        )?,
         Confirm::DryRun => {
             writeln!(out, "Nothing written (dry run).")?;
             return Ok(None);
@@ -545,27 +711,35 @@ fn review(
 }
 
 fn write(paths: &Paths, changes: &[Change], record: &Record, out: &mut impl Write) -> Result<()> {
-    let backup = paths
-        .home
-        .join("backups")
-        .join(humantime::format_rfc3339_seconds(std::time::SystemTime::now()).to_string());
+    private_dir(&paths.home)?;
+    let backup = if changes.iter().any(|change| change.old.is_some()) {
+        let backups = paths.home.join("backups");
+        private_dir(&backups)?;
+        Some(
+            tempfile::Builder::new()
+                .prefix(&format!(
+                    "{}-",
+                    humantime::format_rfc3339_seconds(std::time::SystemTime::now())
+                ))
+                .permissions(std::fs::Permissions::from_mode(0o700))
+                .tempdir_in(backups)?
+                .keep(),
+        )
+    } else {
+        None
+    };
     for (i, c) in changes.iter().enumerate() {
-        if let Some(old) = &c.old {
-            std::fs::create_dir_all(&backup)?;
+        if let (Some(old), Some(backup)) = (&c.old, &backup) {
             let name = c.path.file_name().expect("a file name").to_string_lossy();
-            std::fs::write(backup.join(format!("{i}-{name}")), old)?;
+            write_atomic(&backup.join(format!("{i}-{name}")), old)?;
         }
         match &c.new {
             Some(text) => write_atomic(&c.path, text)?,
             None => std::fs::remove_file(&c.path)?,
         }
     }
-    std::fs::create_dir_all(&paths.home)?;
-    write_atomic(
-        &paths.installed,
-        &(serde_json::to_string_pretty(record)? + "\n"),
-    )?;
-    if backup.exists() {
+    write_record(paths, record)?;
+    if let Some(backup) = backup {
         writeln!(
             out,
             "Written. The previous files are in {}",
@@ -577,18 +751,37 @@ fn write(paths: &Paths, changes: &[Change], record: &Record, out: &mut impl Writ
     Ok(())
 }
 
+fn private_dir(path: &Path) -> Result<()> {
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(path)?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+    Ok(())
+}
+
+fn write_record(paths: &Paths, record: &Record) -> Result<()> {
+    write_atomic(
+        &paths.installed,
+        &(serde_json::to_string_pretty(record)? + "\n"),
+    )
+}
+
 fn write_atomic(path: &Path, text: &str) -> Result<()> {
     let dir = path.parent().expect("a parent directory");
     std::fs::create_dir_all(dir)?;
-    let tmp = dir.join(format!(
-        ".{}.ats-tmp",
-        path.file_name().expect("a file name").to_string_lossy()
-    ));
-    std::fs::write(&tmp, text)?;
-    if let Ok(meta) = std::fs::metadata(path) {
-        std::fs::set_permissions(&tmp, meta.permissions())?;
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
+    tmp.write_all(text.as_bytes())?;
+    match std::fs::metadata(path) {
+        Ok(meta) => tmp.as_file().set_permissions(meta.permissions())?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(e).with_context(|| format!("reading permissions on {}", path.display()));
+        }
     }
-    std::fs::rename(&tmp, path).with_context(|| format!("writing {}", path.display()))
+    tmp.persist(path)
+        .with_context(|| format!("writing {}", path.display()))?;
+    Ok(())
 }
 
 struct DiffFiles {
@@ -644,6 +837,7 @@ mod tests {
             &DshConfig::new(&home, "desktop"),
             &[Agent::Codex],
             ats,
+            false,
             Some(|changed: bool, _: &mut Vec<u8>| {
                 assert!(changed);
                 count.set(count.get() + 1);
@@ -660,6 +854,7 @@ mod tests {
             &DshConfig::new(&home, "desktop"),
             &[Agent::Codex],
             ats,
+            false,
             Some(|changed: bool, _: &mut Vec<u8>| {
                 assert!(!changed);
                 count.set(count.get() + 1);
@@ -686,12 +881,161 @@ mod tests {
                 &DshConfig::new(&home, "desktop"),
                 &[Agent::Codex],
                 binary,
+                false,
                 Some(|_, _: &mut Vec<u8>| -> Result<()> { panic!("service should not start") }),
                 confirm,
                 &mut Vec::new(),
             )
             .unwrap();
         }
+    }
+
+    #[test]
+    fn explicit_restart_is_previewed_even_when_the_service_file_is_unchanged() {
+        let (_dir, paths, home) = setup();
+        let config = DshConfig::new(&home, "desktop");
+        let ats = Path::new("/opt/ats");
+        install(
+            &paths,
+            &home,
+            &config,
+            &[],
+            ats,
+            Service::Skip,
+            Confirm::Yes,
+            &mut Vec::new(),
+        )
+        .unwrap();
+
+        let mut no = &b"n\n"[..];
+        for (confirm, restarted) in [
+            (Confirm::DryRun, false),
+            (Confirm::Ask(&mut no), false),
+            (Confirm::Yes, true),
+        ] {
+            let invoked = std::cell::Cell::new(false);
+            let mut out = Vec::new();
+            let started = install_with(
+                &paths,
+                &home,
+                &config,
+                &[],
+                ats,
+                true,
+                Some(|restart: bool, _: &mut Vec<u8>| {
+                    assert!(restart);
+                    invoked.set(true);
+                    Ok(())
+                }),
+                confirm,
+                &mut out,
+            )
+            .unwrap();
+            assert_eq!(invoked.get(), restarted);
+            assert_eq!(started, restarted);
+            assert!(
+                String::from_utf8(out)
+                    .unwrap()
+                    .contains("Restart the daemon login service.")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn service_health_requires_the_installed_version_and_a_new_instance_on_restart() {
+        let health = |version: &str, instance: &str| crate::protocol::Health {
+            version: version.into(),
+            pid: 1,
+            started_at: String::new(),
+            instance: instance.into(),
+        };
+        let expected = env!("CARGO_PKG_VERSION");
+        let error = verify_health(None, async || Ok(health("0.1.0", "old")), Duration::ZERO)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("--restart"));
+        let error = verify_health(
+            Some("old"),
+            async || Ok(health(expected, "old")),
+            Duration::ZERO,
+        )
+        .await
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("previous daemon instance"));
+
+        let mut replies = [health(expected, "old"), health(expected, "new")].into_iter();
+        verify_health(
+            Some("old"),
+            async || Ok(replies.next().expect("new instance should pass")),
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+    }
+
+    #[test]
+    fn failed_service_start_leaves_private_backups_and_preserves_config_mode() {
+        let (_dir, paths, home) = setup();
+        let settings = files(&home, Agent::Claude).0;
+        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        std::fs::write(&settings, SETTINGS).unwrap();
+        std::fs::set_permissions(&settings, std::fs::Permissions::from_mode(0o640)).unwrap();
+        let error = install_with(
+            &paths,
+            &home,
+            &DshConfig::new(&home, "desktop"),
+            &[Agent::Claude],
+            Path::new("/opt/ats"),
+            false,
+            Some(|_, _: &mut Vec<u8>| anyhow::bail!("service start denied")),
+            Confirm::Yes,
+            &mut Vec::new(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("service start denied"));
+
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        let backups = paths.home.join("backups");
+        let backup = std::fs::read_dir(&backups)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        for path in [&paths.home, &backups, &backup] {
+            assert_eq!(mode(path), 0o700);
+        }
+        let settings_backup = backup.join("0-settings.json");
+        assert_eq!(std::fs::read_to_string(&settings_backup).unwrap(), SETTINGS);
+        assert_eq!(mode(&settings_backup), 0o600);
+        assert_eq!(mode(&paths.installed), 0o600);
+        assert_eq!(mode(&settings), 0o640);
+    }
+
+    #[test]
+    fn uninstall_leaves_an_unrelated_dsh_home_untouched() {
+        let (_dir, paths, home) = setup();
+        let config = DshConfig::new(&home, "desktop");
+        let manifest = config.manifest();
+        std::fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        let dsh_settings = "{ broken unrelated manifest";
+        std::fs::write(&manifest, dsh_settings).unwrap();
+        let notes = config.home.join("ATS.md");
+        std::fs::write(&notes, "unrelated notes").unwrap();
+
+        uninstall(
+            &paths,
+            &home,
+            &config,
+            &[Agent::Dsh],
+            true,
+            false,
+            Confirm::Yes,
+            &mut Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(std::fs::read_to_string(notes).unwrap(), "unrelated notes");
+        assert_eq!(std::fs::read_to_string(manifest).unwrap(), dsh_settings);
     }
 
     #[test]
@@ -739,7 +1083,10 @@ mod tests {
         (dir, paths, home)
     }
 
-    fn run(f: impl FnOnce(&mut dyn BufRead, &mut Vec<u8>) -> Result<()>, answers: &str) -> String {
+    fn run<T>(
+        f: impl FnOnce(&mut dyn BufRead, &mut Vec<u8>) -> Result<T>,
+        answers: &str,
+    ) -> String {
         let mut out = Vec::new();
         f(&mut answers.as_bytes(), &mut out).unwrap();
         String::from_utf8(out).unwrap()
@@ -770,7 +1117,7 @@ mod tests {
                     &DshConfig::new(&home, "desktop"),
                     &agents,
                     ats,
-                    false,
+                    Service::Skip,
                     Confirm::Ask(i),
                     o,
                 )
@@ -829,7 +1176,7 @@ mod tests {
                     &DshConfig::new(&home, "desktop"),
                     &agents,
                     ats,
-                    false,
+                    Service::Skip,
                     Confirm::Ask(i),
                     o
                 ),
@@ -897,7 +1244,7 @@ mod tests {
                     &DshConfig::new(&home, "desktop"),
                     &[Agent::Claude],
                     Path::new("/opt/ats"),
-                    false,
+                    Service::Skip,
                     Confirm::Ask(i),
                     o,
                 )
@@ -934,7 +1281,7 @@ mod tests {
                     &DshConfig::new(&home, "desktop"),
                     &[Agent::Claude],
                     Path::new("/opt/ats"),
-                    false,
+                    Service::Skip,
                     Confirm::Ask(i),
                     o,
                 )
@@ -965,7 +1312,7 @@ mod tests {
                     &DshConfig::new(&home, "desktop"),
                     &[Agent::Codex],
                     ats,
-                    false,
+                    Service::Skip,
                     Confirm::Ask(i),
                     o,
                 )
@@ -1025,7 +1372,7 @@ mod tests {
             &DshConfig::new(&home, "desktop"),
             &[Agent::Codex],
             ats,
-            false,
+            Service::Skip,
             Confirm::Yes,
             &mut out,
         )
@@ -1041,7 +1388,7 @@ mod tests {
             &DshConfig::new(&home, "desktop"),
             &[Agent::Codex],
             ats,
-            false,
+            Service::Skip,
             Confirm::Yes,
             &mut out,
         )
@@ -1079,7 +1426,7 @@ mod tests {
             &DshConfig::new(&home, "desktop"),
             &[Agent::Claude],
             Path::new("/opt/ats"),
-            false,
+            Service::Skip,
             Confirm::Ask(&mut "y\n".as_bytes()),
             &mut out,
         )
@@ -1099,7 +1446,7 @@ mod tests {
             &DshConfig::new(&home, "desktop"),
             &[Agent::Claude],
             ats,
-            false,
+            Service::Skip,
             Confirm::DryRun,
             &mut out,
         )
@@ -1120,7 +1467,7 @@ mod tests {
             &DshConfig::new(&home, "desktop"),
             &[Agent::Claude],
             ats,
-            false,
+            Service::Skip,
             Confirm::Yes,
             &mut out,
         )
@@ -1142,7 +1489,7 @@ mod tests {
             &DshConfig::new(&home, "desktop"),
             &[],
             Path::new("/opt/ats"),
-            false,
+            Service::Skip,
             Confirm::Yes,
             &mut out,
         )

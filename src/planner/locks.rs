@@ -1,5 +1,5 @@
 //! Path resolution and write-lock derivation for submission planning.
-use crate::domain::resource::Lock;
+use crate::domain::resource::{CargoEnv, Lock};
 use crate::profile::Writes;
 use crate::recognize::Analysis;
 use std::path::{Component, Path, PathBuf};
@@ -69,24 +69,121 @@ pub fn project_root(dir: &Path) -> PathBuf {
         .to_path_buf()
 }
 
-fn cargo_target(argv: &[String], cwd: &Path) -> PathBuf {
-    let value = |flag: &str| {
-        argv.iter().enumerate().find_map(|(i, arg)| {
-            arg.strip_prefix(&format!("{flag}="))
-                .map(str::to_string)
-                .or_else(|| (arg == flag).then(|| argv.get(i + 1).cloned()).flatten())
+fn cargo_flag_values<'a>(argv: &'a [String], flag: &'a str) -> impl Iterator<Item = &'a str> {
+    let prefix = format!("{flag}=");
+    argv.iter()
+        .take_while(|arg| arg.as_str() != "--")
+        .enumerate()
+        .filter_map(move |(i, arg)| {
+            arg.strip_prefix(&prefix).or_else(|| {
+                (arg == flag)
+                    .then(|| argv.get(i + 1).map(String::as_str))
+                    .flatten()
+            })
         })
+}
+
+fn read_toml(path: &Path) -> Option<toml::Value> {
+    if !path.is_file() {
+        return None;
+    }
+    toml::from_str(&std::fs::read_to_string(path).ok()?).ok()
+}
+
+fn config_target(doc: &toml::Value) -> Option<&str> {
+    doc.get("build")?.get("target-dir")?.as_str()
+}
+
+fn cargo_config_target(path: &Path, depth: u8) -> Option<PathBuf> {
+    if depth == 0 {
+        return None;
+    }
+    let doc = read_toml(path)?;
+    let directory = path.parent()?;
+    if let Some(target) = config_target(&doc) {
+        return Some(directory.parent().unwrap_or(directory).join(target));
+    }
+    doc.get("include")?
+        .as_array()?
+        .iter()
+        .rev()
+        .find_map(|entry| {
+            let relative = entry.as_str().or_else(|| entry.get("path")?.as_str())?;
+            cargo_config_target(&directory.join(relative), depth - 1)
+        })
+}
+
+fn config_in(directory: &Path) -> Option<PathBuf> {
+    let legacy = directory.join("config");
+    let path = if legacy.exists() {
+        legacy
+    } else {
+        directory.join("config.toml")
     };
-    if let Some(target) = value("--target-dir") {
+    cargo_config_target(&path, 16)
+}
+
+fn cargo_target(
+    argv: &[String],
+    cwd: &Path,
+    shell_env: &CargoEnv,
+    caller_env: &CargoEnv,
+) -> PathBuf {
+    if let Some(target) = cargo_flag_values(argv, "--target-dir").last() {
         return cwd.join(target);
     }
-    let manifest = value("--manifest-path")
+    if let Some(target) = shell_env
+        .target_dir
+        .as_ref()
+        .or(caller_env.target_dir.as_ref())
+    {
+        return cwd.join(target);
+    }
+    let mut target = None;
+    for config in cargo_flag_values(argv, "--config") {
+        let value = if config.contains('=') {
+            toml::from_str::<toml::Value>(config)
+                .ok()
+                .and_then(|doc| config_target(&doc).map(|value| cwd.join(value)))
+        } else {
+            cargo_config_target(&cwd.join(config), 16)
+        };
+        target = value.or(target);
+    }
+    if let Some(target) = target {
+        return target;
+    }
+    if let Some(target) = shell_env
+        .build_target_dir
+        .as_ref()
+        .or(caller_env.build_target_dir.as_ref())
+    {
+        return cwd.join(target);
+    }
+    let cargo_home = shell_env
+        .home
+        .as_ref()
+        .or(caller_env.home.as_ref())
+        .map(|home| cwd.join(home))
+        .or_else(default_cargo_home);
+    if let Some(target) = cwd
+        .ancestors()
+        .find_map(|dir| config_in(&dir.join(".cargo")))
+        .or_else(|| cargo_home.and_then(|home| config_in(&home)))
+    {
+        return target;
+    }
+    let manifest = cargo_flag_values(argv, "--manifest-path")
+        .last()
         .map(|path| cwd.join(path))
-        .unwrap_or_else(|| project_root(cwd).join("Cargo.toml"));
+        .unwrap_or_else(|| {
+            cwd.ancestors()
+                .map(|dir| dir.join("Cargo.toml"))
+                .find(|path| path.is_file())
+                .unwrap_or_else(|| cwd.join("Cargo.toml"))
+        });
     let package = manifest.parent().unwrap_or(cwd);
-    let read =
-        |path: &Path| toml::from_str::<toml::Value>(&std::fs::read_to_string(path).ok()?).ok();
-    if let Some(workspace) = read(&manifest).and_then(|doc| {
+    if let Some(workspace) = read_toml(&manifest).and_then(|doc| {
         doc.get("package")?
             .get("workspace")?
             .as_str()
@@ -96,9 +193,22 @@ fn cargo_target(argv: &[String], cwd: &Path) -> PathBuf {
     }
     let root = package
         .ancestors()
-        .find(|dir| read(&dir.join("Cargo.toml")).is_some_and(|doc| doc.get("workspace").is_some()))
+        .find(|dir| {
+            read_toml(&dir.join("Cargo.toml")).is_some_and(|doc| doc.get("workspace").is_some())
+        })
         .unwrap_or(package);
     root.join("target")
+}
+
+fn default_cargo_home() -> Option<PathBuf> {
+    #[cfg(test)]
+    {
+        None
+    }
+    #[cfg(not(test))]
+    {
+        dirs::home_dir().map(|home| home.join(".cargo"))
+    }
 }
 
 pub fn for_line(
@@ -106,6 +216,7 @@ pub fn for_line(
     cwd: &Path,
     profiles: &crate::profile::Profiles,
     extra: &[String],
+    cargo_env: &CargoEnv,
 ) -> Vec<Lock> {
     let mut locks = Vec::new();
     for s in &analysis.segments {
@@ -126,7 +237,7 @@ pub fn for_line(
                     .unwrap_or_default()
                 {
                     let target = if s.tool.as_deref() == Some("cargo") && p == "target" {
-                        cargo_target(&s.argv, &s.cwd)
+                        cargo_target(&s.argv, &s.cwd, &s.cargo_env, cargo_env)
                     } else {
                         root.join(p)
                     };
@@ -234,13 +345,19 @@ mod tests {
         let r = Recognizer::new(&profiles, &[]);
         let locks = |src: &str, extra: &[&str]| {
             let extra: Vec<String> = extra.iter().map(|s| s.to_string()).collect();
-            for_line(&r.shell(src, &root), &root, &profiles, &extra)
-                .into_iter()
-                .map(|l| match l {
-                    Lock::Path(p) => p.replace(&normalize(&root), "<root>"),
-                    Lock::Named(n) => format!("named:{n}"),
-                })
-                .collect::<Vec<_>>()
+            for_line(
+                &r.shell(src, &root),
+                &root,
+                &profiles,
+                &extra,
+                &CargoEnv::default(),
+            )
+            .into_iter()
+            .map(|l| match l {
+                Lock::Path(p) => p.replace(&normalize(&root), "<root>"),
+                Lock::Named(n) => format!("named:{n}"),
+            })
+            .collect::<Vec<_>>()
         };
         assert_eq!(locks("ls -la", &[]), Vec::<String>::new());
         assert_eq!(locks("cargo build", &[]), ["<root>/target"]);
@@ -269,7 +386,13 @@ mod tests {
             let krate = repo.join(name);
             std::fs::create_dir_all(&krate).unwrap();
             std::fs::write(krate.join("Cargo.toml"), "").unwrap();
-            for_line(&r.shell("cargo build", &krate), &krate, &profiles, &[])
+            for_line(
+                &r.shell("cargo build", &krate),
+                &krate,
+                &profiles,
+                &[],
+                &CargoEnv::default(),
+            )
         };
         let (a, b) = (lock("a"), lock("b"));
         assert!(!a[0].conflicts(&b[0]), "{a:?} {b:?}");
@@ -298,7 +421,13 @@ mod tests {
                 ("cargo test --target-dir ../shared", root.join("shared")),
                 ("cargo check --target-dir=../shared", root.join("shared")),
             ] {
-                let locks = for_line(&r.shell(command, &cwd), &cwd, &profiles, &[]);
+                let locks = for_line(
+                    &r.shell(command, &cwd),
+                    &cwd,
+                    &profiles,
+                    &[],
+                    &CargoEnv::default(),
+                );
                 assert_eq!(locks, [path(&expected)], "{member}: {command}");
             }
         }
@@ -307,7 +436,106 @@ mod tests {
             root,
             &profiles,
             &[],
+            &CargoEnv::default(),
         );
         assert_eq!(locks, [path(&root.join("target"))]);
+    }
+
+    #[test]
+    fn cargo_output_locks_follow_config_and_caller_environment() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let config = root.join(".cargo");
+        let first = root.join("first");
+        let second = root.join("second");
+        let cargo_home = root.join("cargo-home");
+        for directory in [&config, &first, &second, &cargo_home] {
+            std::fs::create_dir_all(directory).unwrap();
+        }
+        std::fs::write(config.join("config.toml"), "[build]\ntarget-dir = 'shared'").unwrap();
+        std::fs::write(
+            cargo_home.join("config.toml"),
+            "[build]\ntarget-dir = 'global'",
+        )
+        .unwrap();
+        std::fs::write(
+            config.join("override.toml"),
+            "[build]\ntarget-dir = 'custom'",
+        )
+        .unwrap();
+        for project in [&first, &second] {
+            std::fs::write(project.join("Cargo.toml"), "").unwrap();
+        }
+        let profiles = Profiles::builtin();
+        let recognizer = Recognizer::new(&profiles, &[]);
+        let locks = |source: &str, cwd: &Path, env: &CargoEnv| {
+            for_line(&recognizer.shell(source, cwd), cwd, &profiles, &[], env)
+        };
+        let home_only = CargoEnv {
+            home: Some(cargo_home.to_str().unwrap().into()),
+            ..CargoEnv::default()
+        };
+        let a = locks("cargo build", &first, &home_only);
+        let b = locks("cargo build", &second, &home_only);
+        assert_eq!(a, [path(&root.join("shared"))]);
+        assert_eq!(a, b);
+        for (source, env, expected) in [
+            (
+                "cargo build --config ../.cargo/override.toml",
+                &home_only,
+                root.join("custom"),
+            ),
+            (
+                "CARGO_TARGET_DIR=../inline cargo build",
+                &home_only,
+                root.join("inline"),
+            ),
+            (
+                "env CARGO_TARGET_DIR=../inline cargo build",
+                &home_only,
+                root.join("inline"),
+            ),
+            (
+                "cargo build",
+                &CargoEnv {
+                    target_dir: Some("../external".into()),
+                    ..Default::default()
+                },
+                root.join("external"),
+            ),
+            (
+                "cargo build",
+                &CargoEnv {
+                    build_target_dir: Some("../external".into()),
+                    ..Default::default()
+                },
+                root.join("external"),
+            ),
+            (
+                "cargo build --target-dir ../explicit",
+                &CargoEnv {
+                    target_dir: Some("../external".into()),
+                    ..Default::default()
+                },
+                root.join("explicit"),
+            ),
+            (
+                "cargo test -- --target-dir ../test-arg",
+                &home_only,
+                root.join("shared"),
+            ),
+        ] {
+            assert_eq!(locks(source, &first, env), [path(&expected)], "{source}");
+        }
+        std::fs::write(config.join("config"), "include = ['override.toml']").unwrap();
+        assert_eq!(
+            locks("cargo build", &first, &home_only),
+            [path(&root.join("custom"))]
+        );
+        std::fs::remove_dir_all(config).unwrap();
+        assert_eq!(
+            locks("cargo build", &first, &home_only),
+            [path(&root.join("global"))]
+        );
     }
 }

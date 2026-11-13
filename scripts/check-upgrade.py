@@ -13,6 +13,8 @@ import tempfile
 
 from acceptance import Home, until
 
+NEW_SCHEMA = 6
+
 
 def upgrade(old, new, case):
     cancel = case == "cancel"
@@ -32,7 +34,8 @@ def upgrade(old, new, case):
             waiting, waiter = home.submit(old, "printf 'queued executor result\\n'")
             until("old queued executor registration", lambda: home.job(waiting)["executor_pid"] == waiter.pid)
             assert home.job(waiting)["state"] == "queued"
-            assert home.sql("PRAGMA user_version") == [(3,)]
+            old_schema = home.sql("PRAGMA user_version")[0][0]
+            assert old_schema in (3, 5), old_schema
             original = home.sql("SELECT executor_pid, executor_start, created_at FROM jobs WHERE id=?",
                                 (running["job"],))
             home.conflict()
@@ -43,7 +46,7 @@ def upgrade(old, new, case):
                 until("old report pending during daemon outage", lambda: home.pending_report(
                     f"/v1/jobs/{running['job']}/main-result"))
             home.daemon(new)
-            assert home.sql("PRAGMA user_version") == [(5,)]
+            assert home.sql("PRAGMA user_version") == [(NEW_SCHEMA,)]
             assert home.job(running)["executor_pid"] == executor.pid
             assert home.sql("SELECT executor_pid, executor_start, created_at FROM jobs WHERE id=?",
                             (running["job"],)) == original
@@ -79,7 +82,7 @@ def upgrade(old, new, case):
                                 {**payload, "exit_code": 99})[0] == 409
             assert home.sql("SELECT COUNT(*) FROM job_events") == count
             print(json.dumps({"case": case,
-                              "result": "PASS", "schema": [3, 5], "old_state": state,
+                              "result": "PASS", "schema": [old_schema, NEW_SCHEMA], "old_state": state,
                               "old_exit_code": code, "queued_exit_code": 0, "started_once": True,
                               "lock_conflict": 409, "matching_replay": 204, "conflicting_replay": 409}), flush=True)
         finally:
@@ -99,6 +102,8 @@ def rollback(old, new):
             assert executor.wait(timeout=5) == 0
             original = home.cli_job(old, created)
             assert original["exit_code"] == 9
+            old_schema = home.sql("PRAGMA user_version")[0][0]
+            assert old_schema in (3, 5), old_schema
             daemon.terminate()
             daemon.wait(timeout=5)
             columns = ",".join(row[1] for row in home.sql("PRAGMA table_info(jobs)"))
@@ -108,7 +113,7 @@ def rollback(old, new):
                 with contextlib.closing(sqlite3.connect(backup)) as destination:
                     source.backup(destination)
             daemon = home.daemon(new)
-            assert home.sql("PRAGMA user_version") == [(5,)]
+            assert home.sql("PRAGMA user_version") == [(NEW_SCHEMA,)]
             assert home.sql(query) == baseline
             assert home.cli_job(new, created)["exit_code"] == 9
             extra, executor = home.submit(new, "exit 0")
@@ -120,15 +125,15 @@ def rollback(old, new):
             refused = home.spawn(old, "daemon")
             assert refused.wait(timeout=5) != 0
             diagnostic = (root / f"process-{len(home.processes) - 1}.log").read_text()
-            assert "database schema version 5 is newer than this ats (3)" in diagnostic, diagnostic
-            assert home.sql("PRAGMA user_version") == [(5,)]
+            assert f"database schema version {NEW_SCHEMA} is newer than this ats ({old_schema})" in diagnostic, diagnostic
+            assert home.sql("PRAGMA user_version") == [(NEW_SCHEMA,)]
             assert home.sql("SELECT * FROM jobs ORDER BY id") == records
             assert home.sql("PRAGMA integrity_check") == [("ok",)]
             with contextlib.closing(sqlite3.connect(backup)) as source:
                 with contextlib.closing(sqlite3.connect(home.root / "ats.db")) as destination:
                     source.backup(destination)
             home.daemon(old)
-            assert home.sql("PRAGMA user_version") == [(3,)]
+            assert home.sql("PRAGMA user_version") == [(old_schema,)]
             assert home.sql("PRAGMA integrity_check") == [("ok",)]
             assert home.sql(query) == baseline
             assert home.cli_job(old, created)["exit_code"] == 9
@@ -136,7 +141,7 @@ def rollback(old, new):
             logs = Path(original["log_path"])
             assert (logs / "stdout.log").read_text() == "preserved history\n"
             print(json.dumps({"case": "refuse-new-schema-and-restore-backup", "result": "PASS",
-                              "schema": [3, 5, 3], "old_daemon_refused_schema_5": True,
+                              "schema": [old_schema, NEW_SCHEMA, old_schema], "old_daemon_refused_schema_6": True,
                               "history_exit_code": 9, "integrity": "ok"}), flush=True)
         finally:
             home.close()

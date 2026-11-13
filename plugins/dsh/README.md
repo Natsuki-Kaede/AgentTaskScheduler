@@ -30,7 +30,7 @@ With a custom `DSH_HOME`, plugin files live under `$DSH_HOME/plugins/agent-task-
 
 The installer runs DSH's package manager with `--ignore-scripts` to refresh the profile's links and lockfile. Existing dependencies, bundle order and profile overrides are preserved. Reinstalling updates the embedded files and binary path. If linking fails after the files are written, retry installation.
 
-Restart the selected profile after installing or updating. Verify the daemon with `ats status`. DSH agents then send heavy commands through `ats run`; small commands remain direct.
+After replacing the ats binary, follow the [upgrade steps](../../INSTALL.md#upgrade-an-existing-installation) and run `ats install --agent dsh --restart` for the selected profile. Restart that profile after installing or updating. Verify task history with `ats status`. DSH agents then send heavy commands through `ats run`; small commands remain direct.
 
 ## Reminders and session ownership
 
@@ -45,7 +45,7 @@ The integration follows the installed DSH 0.2.2 interfaces from the official [De
 
 `DSH_SESSION_ID` takes precedence over inherited Codex or Claude session variables because DSH rebuilds its managed environment for each native shell execution. Each agent, including an in-process subagent using the native shell, owns its own reminders. The adapter does not rewrite shell commands or change their approval policy.
 
-The bundle invokes `ats hook dsh stop` and `ats hook dsh user-prompt-submit`. These reuse the existing daemon reminder API. Completed submissions are acknowledged once; stop reminders are limited to once per turn. Hook failures and an unavailable daemon allow the agent to continue. A canceled turn does not receive a stop reminder. Reminders require the native DSH shell's session environment; an unrelated external terminal needs an explicit `ats run --session <id>` to join that session.
+The bundle invokes `ats hook dsh stop` and `ats hook dsh user-prompt-submit`. Final results and states requiring attention (`blocked`, `capacity_insufficient`) have separate delivery receipts. Detached work can still report an unacknowledged attention state at Stop or the next turn, once per uninterrupted state. Stop reminders are limited to once per turn. Detach does not wake a stopped agent; keep waiting when the current goal requires the result. Hook failures and an unavailable daemon allow the agent to continue. A canceled turn does not receive a stop reminder. Reminders require the native DSH shell's session environment; an unrelated external terminal needs an explicit `ats run --session <id>` to join that session.
 
 ## Remove
 
@@ -53,7 +53,7 @@ The bundle invokes `ats hook dsh stop` and `ats hook dsh user-prompt-submit`. Th
 ats uninstall --agent dsh --dsh-profile desktop
 ```
 
-The selected profile loses only ats's dependency and bundle entry. Shared plugin files and managed instructions stay while another profile references the bundle. Removing the last configured profile removes these files and instructions. The login service remains when uninstalling a named agent; plain `ats uninstall` also removes the service.
+The selected profile loses ats's dependency and bundle entry. Shared plugin files and managed instructions stay while another profile references the bundle. Removing the last configured profile removes these files and instructions. The login service remains when uninstalling a named agent. Plain `ats uninstall` removes the service and ats's links from all configured profiles in the current DSH home. If refreshing a profile's links fails, rerun the same uninstall command.
 
 ## Verification
 

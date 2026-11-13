@@ -6,6 +6,13 @@ use std::mem::{MaybeUninit, size_of, zeroed};
 
 use super::{Memory, System};
 
+unsafe extern "C" {
+    fn mach_port_deallocate(
+        task: libc::mach_port_t,
+        name: libc::mach_port_t,
+    ) -> libc::kern_return_t;
+}
+
 fn sysctl<T: Copy>(name: &str) -> Option<T> {
     let c = CString::new(name).ok()?;
     let mut v = MaybeUninit::<T>::zeroed();
@@ -36,12 +43,15 @@ pub fn system() -> Option<System> {
     // SAFETY: `count` is the size of `vm` in integers.
     #[allow(deprecated)]
     let kr = unsafe {
-        libc::host_statistics64(
-            libc::mach_host_self(),
+        let host = libc::mach_host_self();
+        let status = libc::host_statistics64(
+            host,
             libc::HOST_VM_INFO64,
             (&mut vm as *mut libc::vm_statistics64).cast(),
             &mut count,
-        )
+        );
+        mach_port_deallocate(libc::mach_task_self(), host);
+        status
     };
     if kr != 0 {
         return None;

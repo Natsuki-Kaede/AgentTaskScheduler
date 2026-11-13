@@ -21,7 +21,53 @@ impl App {
         Ok(())
     }
     pub fn started(&self, id: &str, log_path: &str, pgid: Option<i64>) -> Result<()> {
-        self.store().set_started(id, log_path, pgid)?;
+        let executor = self.store().recovery_facts(id)?.executor;
+        let leader = pgid
+            .and_then(|pid| i32::try_from(pid).ok())
+            .filter(|pid| *pid > 0)
+            .and_then(|pid| crate::procinfo::probe(pid).ok().flatten())
+            .filter(|leader| {
+                leader.pid == leader.pgid
+                    && executor.as_ref().is_some_and(|(pid, start)| {
+                        i64::from(leader.ppid) == *pid && crate::procinfo::alive(leader.ppid, start)
+                    })
+            });
+        self.store().record_start(
+            id,
+            log_path,
+            pgid,
+            leader.as_ref().map(|p| p.start.as_str()),
+        )?;
+        self.notify();
+        Ok(())
+    }
+    pub fn launch(&self, id: &str, pid: i64, start: &str) -> Result<()> {
+        let facts = self.store().recovery_facts(id)?;
+        let identity = crate::domain::process::ProcessIdentity {
+            pid: i32::try_from(pid)
+                .ok()
+                .filter(|pid| *pid > 0)
+                .ok_or_else(|| InvalidInput("invalid launch PID".into()))?,
+            start: start.to_owned(),
+        };
+        let replay = facts
+            .launched
+            .as_ref()
+            .is_some_and(|(prior, prior_start)| *prior == pid && prior_start == start);
+        if !replay {
+            let verified = crate::procinfo::probe(identity.pid)?.is_some_and(|child| {
+                child.start == start
+                    && facts.pgid == Some(i64::from(child.pgid))
+                    && facts.executor.as_ref().is_some_and(|(parent, start)| {
+                        *parent == i64::from(child.ppid)
+                            && crate::procinfo::alive(child.ppid, start)
+                    })
+            });
+            if !verified {
+                return Err(Conflict(format!("job {id}: cannot confirm launch process")).into());
+            }
+        }
+        self.store().record_launch(&facts, &identity)?;
         self.notify();
         Ok(())
     }
@@ -65,10 +111,16 @@ impl App {
             let store = self.store();
             (store.recovery_facts(id)?, store.members_of(id)?)
         };
+        let mut gone =
+            |pid, start: &str| probe(pid).is_ok_and(|p| p.is_none_or(|p| p.start != start));
         if !job.state.terminal()
-            && members.iter().all(|identity| {
-                probe(identity.pid).is_ok_and(|p| p.is_none_or(|p| p.start != identity.start))
-            })
+            && job
+                .launched
+                .as_ref()
+                .is_none_or(|(pid, start)| gone(*pid as i32, start))
+            && members
+                .iter()
+                .all(|identity| gone(identity.pid, &identity.start))
         {
             let report = job.finish.as_ref().expect("completion just recorded");
             let state = if job.canceled {
@@ -160,10 +212,11 @@ impl App {
         loop {
             let row = self.submission(id)?;
             let reached = row.job_state.terminal()
-                || row.job_state == JobState::Blocked
-                || (until == WaitUntil::Main
-                    && (row.main_exit_code.is_some()
-                        || row.job_state == JobState::CapacityInsufficient));
+                || matches!(
+                    row.job_state,
+                    JobState::Blocked | JobState::CapacityInsufficient
+                )
+                || (until == WaitUntil::Main && row.main_exit_code.is_some());
             if reached || deadline.expired() || self.stopping() {
                 return Ok((reached, row));
             }
@@ -230,6 +283,7 @@ mod completion_tests {
                     pid: 20,
                     ppid: 1,
                     pgid: 20,
+                    session: None,
                     start: if reading == "alive" {
                         "worker"
                     } else {

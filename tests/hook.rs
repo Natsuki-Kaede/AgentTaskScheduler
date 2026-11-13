@@ -47,6 +47,16 @@ fn runs_directly_inside_a_job() {
     );
     assert_eq!(out.status.code(), Some(7));
     assert_eq!(String::from_utf8_lossy(&out.stdout), "nested\n");
+
+    let invalid = ats(
+        dir.path(),
+        &["run", "--hint", "bad", "--sh", "echo should-not-run"],
+        "",
+        &[("ATS_JOB_ID", "j_parent")],
+    );
+    assert_eq!(invalid.status.code(), Some(77), "{invalid:?}");
+    assert!(invalid.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("--hint"));
 }
 
 #[test]
@@ -235,6 +245,121 @@ fn wait_returns_the_commands_output_and_exit_code() {
         stderr.starts_with("err\n") && stderr.contains("is completed, exit code 3"),
         "{stderr}"
     );
+}
+
+#[test]
+fn detached_blocked_submissions_keep_their_completion_reminder() {
+    for (agent, event, inspect_blocked) in [
+        ("codex", "stop", true),
+        ("claude", "user-prompt-submit", false),
+        ("dsh", "stop", false),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let _daemon = Daemon(
+            Command::new(env!("CARGO_BIN_EXE_ats"))
+                .arg("daemon")
+                .env("ATS_HOME", &home)
+                .env_remove("ATS_JOB_ID")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        wait_until("daemon", || {
+            ats(&home, &["status"], "", &[]).status.success()
+        });
+        let submission = |out: Output| {
+            assert_eq!(out.status.code(), Some(75), "{out:?}");
+            String::from_utf8_lossy(&out.stderr)
+                .split_whitespace()
+                .nth(2)
+                .unwrap()
+                .to_string()
+        };
+        let gate = dir.path().join("fail-parent");
+        let command = format!(
+            "perl -e 'until (-e $ARGV[0]) {{ select undef,undef,undef,0.05 }} exit 1' '{}'",
+            gate.display()
+        );
+        let parent = submission(ats(
+            &home,
+            &["run", "--no-wait", "--session", "parent", "--sh", &command],
+            "",
+            &[],
+        ));
+        let child = submission(ats(
+            &home,
+            &[
+                "run",
+                "--no-wait",
+                "--session",
+                "child",
+                "--after",
+                &parent,
+                "--sh",
+                "perl -e 1; echo recovered",
+            ],
+            "",
+            &[],
+        ));
+        let detached = ats(&home, &["detach", &child], "", &[]);
+        assert!(detached.status.success());
+        assert!(
+            String::from_utf8_lossy(&detached.stderr).contains("does not wake a stopped agent")
+        );
+        std::fs::write(gate, "fail").unwrap();
+        let row = || -> serde_json::Value {
+            let out = ats(&home, &["status", &child, "--json"], "", &[]);
+            assert!(out.status.success(), "{out:?}");
+            serde_json::from_slice(&out.stdout).unwrap()
+        };
+        wait_until("blocked dependent", || row()["job_state"] == "blocked");
+        if inspect_blocked {
+            let out = ats(&home, &["wait", &child], "", &[]);
+            assert_eq!(out.status.code(), Some(76), "{out:?}");
+            assert_eq!(
+                row()["quiet"],
+                false,
+                "a blocked result is not the final result"
+            );
+        }
+        let hook = |event: &str| -> serde_json::Value {
+            let out = ats(
+                &home,
+                &["hook", agent, event],
+                r#"{"session_id":"child","stop_hook_active":false}"#,
+                &[],
+            );
+            assert!(out.status.success(), "{out:?}");
+            serde_json::from_slice(&out.stdout).unwrap_or_default()
+        };
+        let notice = hook(event).to_string();
+        assert!(
+            notice.contains(&child) && notice.contains("blocked"),
+            "{agent}: {notice}"
+        );
+        assert!(
+            hook("stop").is_null(),
+            "detached attention is reported once"
+        );
+        assert!(
+            hook("user-prompt-submit").is_null(),
+            "hooks share the attention receipt"
+        );
+        assert_eq!(row()["quiet"], false);
+        assert!(ats(&home, &["unblock", &child], "", &[]).status.success());
+        wait_until("recovered dependent", || row()["job_state"] == "completed");
+        let notice = hook("user-prompt-submit").to_string();
+        assert!(
+            notice.contains(&child) && notice.contains("exit code 0"),
+            "{notice}"
+        );
+        assert!(
+            hook("user-prompt-submit").is_null(),
+            "completion is reported once"
+        );
+    }
 }
 
 struct Daemon(std::process::Child);

@@ -48,6 +48,7 @@ impl App {
             cwd,
             &req.locks,
             req.hint.as_deref(),
+            &req.cargo_env,
             &history,
         )?;
         let mut store = self.store();
@@ -118,6 +119,7 @@ mod tests {
             now: false,
             locks: vec!["shared".into()],
             hint: None,
+            cargo_env: Default::default(),
         }
     }
 
@@ -151,5 +153,38 @@ mod tests {
                 .is_some()
         );
         assert_eq!(app.list_jobs(&[], 10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn configured_cargo_outputs_are_mutually_exclusive() {
+        let root = tempfile::tempdir().unwrap();
+        let shared = root.path().join("shared");
+        let app = App::new(
+            Store::open_in_memory().unwrap(),
+            "test".into(),
+            "instance".into(),
+        );
+        let make_request = |name: &str| {
+            let cwd = root.path().join(name);
+            std::fs::create_dir_all(cwd.join(".cargo")).unwrap();
+            std::fs::write(cwd.join("Cargo.toml"), "").unwrap();
+            std::fs::write(
+                cwd.join(".cargo/config.toml"),
+                format!("[build]\ntarget-dir = {:?}\n", shared.to_str().unwrap()),
+            )
+            .unwrap();
+            let mut req = command(cwd.to_str().unwrap());
+            req.source = Some("cargo build".into());
+            req.locks.clear();
+            req
+        };
+        let first = app.submit(make_request("first")).unwrap();
+        app.register_executor(&first.job, 10, "executor").unwrap();
+        app.test_admit(&first.job, 100, 1);
+        let mut second = make_request("second");
+        second.now = true;
+        let error = app.submit(second).unwrap_err();
+        assert!(error.downcast_ref::<Conflict>().is_some());
+        assert!(error.to_string().contains(&locks::normalize(&shared)));
     }
 }

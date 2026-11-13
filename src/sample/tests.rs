@@ -21,6 +21,8 @@ fn samples_a_running_child() {
                 id: "j".into(),
                 executor: Some(executor),
                 pgid: None,
+                leader: None,
+                launched: None,
             }],
             procinfo::snapshot().unwrap(),
         );

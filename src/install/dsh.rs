@@ -153,38 +153,63 @@ pub(super) fn install(user: &Path, config: &DshConfig<'_>, ats: &Path) -> Result
     Ok(changes)
 }
 
-fn used_elsewhere(config: &DshConfig<'_>) -> Result<bool> {
+fn profiles(config: &DshConfig<'_>) -> Result<Vec<String>> {
     let entries = match std::fs::read_dir(config.home.join("profiles")) {
         Ok(entries) => entries,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(e.into()),
     };
+    let mut profiles = Vec::new();
     for entry in entries {
         let entry = entry?;
-        if entry.file_name() == config.profile || !entry.path().is_dir() {
-            continue;
-        }
-        let path = entry.path().join("package.json");
-        if let Some(text) = read(&path)? {
-            let doc = parse(&path, Some(&text))?;
-            if doc["dependencies"].get(PACKAGE).is_some()
-                || doc["dsh"]["profile"]["bundles"]
-                    .as_array()
-                    .is_some_and(|items| items.iter().any(|v| v == PACKAGE))
-            {
-                return Ok(true);
-            }
+        if entry.path().is_dir()
+            && let Ok(name) = entry.file_name().into_string()
+            && validate_profile(&name).is_ok()
+        {
+            profiles.push(name);
         }
     }
-    Ok(false)
+    profiles.sort();
+    Ok(profiles)
 }
 
-pub(super) fn uninstall(user: &Path, config: &DshConfig<'_>) -> Result<Vec<Change>> {
-    validate_profile(config.profile)?;
-    let path = config.manifest();
+pub(super) fn uninstall(
+    user: &Path,
+    config: &DshConfig<'_>,
+    all: bool,
+) -> Result<(Vec<Change>, BTreeSet<String>)> {
+    let profiles = profiles(config)?;
+    if !all {
+        validate_profile(config.profile)?;
+    }
     let mut changes = Vec::new();
-    if let Some(old) = read(&path)? {
-        let mut doc = parse(&path, Some(&old))?;
+    let mut affected = BTreeSet::new();
+    let mut used_elsewhere = false;
+    for profile in profiles {
+        let path = config
+            .home
+            .join("profiles")
+            .join(&profile)
+            .join("package.json");
+        let Some(old) = read(&path)? else {
+            continue;
+        };
+        let mut doc = match parse(&path, Some(&old)) {
+            Ok(doc) => doc,
+            Err(_) if !old.contains(PACKAGE) => continue,
+            Err(error) => return Err(error),
+        };
+        let linked = doc["dependencies"].get(PACKAGE).is_some()
+            || doc["dsh"]["profile"]["bundles"]
+                .as_array()
+                .is_some_and(|items| items.iter().any(|v| v == PACKAGE));
+        if !linked {
+            continue;
+        }
+        if !all && profile != config.profile {
+            used_elsewhere = true;
+            continue;
+        }
         if let Some(deps) = doc.get_mut("dependencies").and_then(Value::as_object_mut) {
             deps.remove(PACKAGE);
         }
@@ -199,27 +224,41 @@ pub(super) fn uninstall(user: &Path, config: &DshConfig<'_>) -> Result<Vec<Chang
             old: Some(old),
             new: Some(json_text(&doc)),
         });
+        affected.insert(profile);
     }
-    if !used_elsewhere(config)? {
+    if !used_elsewhere {
+        let directory = plugin_dir(user, config);
+        let mut installed = !affected.is_empty();
         for (file, _) in PLUGIN_FILES {
-            changes.push(change(plugin_dir(user, config).join(file), None)?);
+            let plugin = change(directory.join(file), None)?;
+            installed |= plugin.old.is_some();
+            changes.push(plugin);
         }
         let path = config.home.join("AGENTS.md");
         if let Some(old) = read(&path)? {
             let new = without_block(&old);
-            changes.push(Change {
-                path,
-                old: Some(old),
-                new: Some(new).filter(|t| !t.trim().is_empty()),
-            });
+            if new != old {
+                installed = true;
+                changes.push(Change {
+                    path,
+                    old: Some(old),
+                    new: Some(new).filter(|t| !t.trim().is_empty()),
+                });
+            }
         }
-        changes.push(change(config.home.join("ATS.md"), None)?);
+        if installed {
+            changes.push(change(config.home.join("ATS.md"), None)?);
+        }
     }
-    Ok(changes)
+    Ok((changes, affected))
 }
 
 pub(super) fn link(config: &DshConfig<'_>, out: &mut impl Write) -> Result<()> {
-    let profile = config.profile;
+    link_profile(&config.home, config.profile, out)
+}
+
+pub(super) fn link_profile(home: &Path, profile: &str, out: &mut impl Write) -> Result<()> {
+    validate_profile(profile)?;
     let binary = std::env::var_os("DSH_BIN")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
@@ -241,7 +280,7 @@ pub(super) fn link(config: &DshConfig<'_>, out: &mut impl Write) -> Result<()> {
             "--ignore-scripts",
             "--config.strict-dep-builds=false",
         ])
-        .env("DSH_HOME", &config.home)
+        .env("DSH_HOME", home)
         .output()
         .with_context(|| {
             format!(
@@ -253,8 +292,7 @@ pub(super) fn link(config: &DshConfig<'_>, out: &mut impl Write) -> Result<()> {
     out.write_all(&result.stderr)?;
     if !result.status.success() {
         bail!(
-            "DSH package installation failed; retry `{0} plugin --profile {profile} install --ignore-scripts --config.strict-dep-builds=false`",
-            binary.display()
+            "DSH package installation failed for profile {profile}; rerun the ats command to retry"
         );
     }
     writeln!(
@@ -293,7 +331,7 @@ mod tests {
                 &DshConfig::new(&user, profile),
                 &[Agent::Dsh],
                 binary,
-                false,
+                Service::Skip,
                 confirm,
                 out,
             )
@@ -356,6 +394,112 @@ mod tests {
             "# My rules\n"
         );
         assert!(!user.join(".dsh/ATS.md").exists());
+    }
+
+    #[test]
+    fn full_uninstall_removes_nondefault_profiles_and_retries_failed_links() {
+        let dir = tempfile::tempdir().unwrap();
+        let user = dir.path().join("user");
+        let paths = Paths::with(dir.path().join("ats"), dir.path().join("requests"));
+        let binary = Path::new("/opt/ats");
+        let untouched = "{\"dependencies\":{\"other\":\"link:/other\"}}\n";
+        for profile in ["headless", "web", "tui"] {
+            let config = DshConfig::new(&user, profile);
+            let path = config.manifest();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, untouched).unwrap();
+            if profile != "tui" {
+                super::super::install(
+                    &paths,
+                    &user,
+                    &config,
+                    &[Agent::Dsh],
+                    binary,
+                    Service::Skip,
+                    Confirm::Yes,
+                    &mut Vec::new(),
+                )
+                .unwrap();
+            }
+        }
+        let config = DshConfig::new(&user, "desktop");
+        let agents = agents(&user, &[], &config);
+        assert!(agents.is_empty());
+        let out = &mut Vec::new();
+        super::super::uninstall_with(
+            &paths,
+            &user,
+            &config,
+            &agents,
+            true,
+            Some(|_: &Path| panic!("dry run should not unload")),
+            |_, _, _| panic!("dry run should not link"),
+            Confirm::DryRun,
+            out,
+        )
+        .unwrap();
+        let preview = String::from_utf8_lossy(out);
+        assert!(preview.contains("Refresh DSH package links for headless, web."));
+        assert!(plugin_dir(&user, &config).join("index.js").exists());
+        assert!(service::file(&user).exists());
+
+        let mut linked = Vec::new();
+        let error = super::super::uninstall_with(
+            &paths,
+            &user,
+            &config,
+            &agents,
+            true,
+            Some(|_: &Path| Ok(())),
+            |home, profile, _| {
+                assert_eq!(home, config.home);
+                linked.push(profile.to_string());
+                if profile == "web" {
+                    bail!("relink denied");
+                }
+                Ok(())
+            },
+            Confirm::Yes,
+            &mut Vec::new(),
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "relink denied");
+        assert_eq!(linked, ["headless", "web"]);
+        let pending = Record::load(&paths).unwrap().dsh_relinks;
+        assert_eq!(pending[&config.home], BTreeSet::from(["web".into()]));
+        assert!(!plugin_dir(&user, &config).join("index.js").exists());
+        assert!(!service::file(&user).exists());
+        for profile in ["headless", "web", "tui"] {
+            let path = DshConfig::new(&user, profile).manifest();
+            let actual = std::fs::read_to_string(&path).unwrap();
+            let doc = parse(&path, Some(&actual)).unwrap();
+            assert_eq!(doc["dependencies"]["other"], "link:/other");
+            assert!(doc["dependencies"].get(PACKAGE).is_none());
+            if profile == "tui" {
+                assert_eq!(actual, untouched);
+            } else {
+                assert_eq!(doc["dsh"]["profile"]["bundles"], json!([]));
+            }
+        }
+
+        super::super::uninstall_with(
+            &paths,
+            &user,
+            &config,
+            &agents,
+            true,
+            Some(|_: &Path| panic!("service was removed on the first attempt")),
+            |home, profile, _: &mut Vec<u8>| {
+                assert_eq!(home, config.home);
+                linked.push(profile.to_string());
+                Ok(())
+            },
+            Confirm::Yes,
+            &mut Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(linked, ["headless", "web", "web"]);
+        assert!(Record::load(&paths).unwrap().dsh_relinks.is_empty());
     }
 
     #[test]

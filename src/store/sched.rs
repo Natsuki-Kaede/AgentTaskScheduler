@@ -16,6 +16,29 @@ pub(super) fn in_list(states: &[&str]) -> String {
         .join(",")
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::tests::sample;
+
+    #[test]
+    fn unblocking_invalidates_a_pending_blocked_decision() {
+        let mut store = Store::open_in_memory().unwrap();
+        let failed = store.create_submission(&sample("make")).unwrap().job;
+        store.finish(&failed, JobState::StartFailed, None).unwrap();
+        let mut submission = sample("make test");
+        submission.plan.after.push(failed.clone());
+        let job = store.create_submission(&submission).unwrap().job;
+        assert_eq!(store.block_for(&job, &failed).unwrap(), Some(true));
+        assert_eq!(store.take_attention_reminders("sess").unwrap().len(), 1);
+        assert_eq!(store.block_for(&job, &failed).unwrap(), Some(false));
+        store.unblock(&job).unwrap();
+        assert_eq!(store.block_for(&job, &failed).unwrap(), None);
+        assert_eq!(store.job(&job).unwrap().unwrap().state, JobState::Queued);
+        assert!(store.take_attention_reminders("sess").unwrap().is_empty());
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Predecessor {
     pub job: String,
@@ -205,6 +228,19 @@ impl Store {
     }
 
     pub fn set_queue_state(&mut self, job: &str, next: JobState) -> Result<()> {
+        self.update_queue_state(job, next, None).map(|_| ())
+    }
+
+    pub fn block_for(&mut self, job: &str, predecessor: &str) -> Result<Option<bool>> {
+        self.update_queue_state(job, JobState::Blocked, Some(predecessor))
+    }
+
+    fn update_queue_state(
+        &mut self,
+        job: &str,
+        next: JobState,
+        failed_dependency: Option<&str>,
+    ) -> Result<Option<bool>> {
         let tx = self.conn.transaction()?;
         let state: JobState = tx
             .query_row("SELECT state FROM jobs WHERE id = ?1", params![job], |r| {
@@ -212,8 +248,28 @@ impl Store {
             })
             .optional()?
             .ok_or_else(|| no_job(job))?;
-        if !state.pre_lease() || state == next {
-            return Ok(());
+        if !state.pre_lease() {
+            return Ok(None);
+        }
+        if let Some(predecessor) = failed_dependency {
+            let failed: bool = tx.query_row(
+                &format!(
+                    "SELECT EXISTS (
+                        SELECT 1 FROM dependencies d JOIN jobs p ON p.id = d.after_job_id
+                        WHERE d.job_id = ?1 AND p.id = ?2 AND p.state IN ({})
+                          AND (p.state != 'completed' OR p.exit_code IS NOT 0)
+                    )",
+                    in_list(crate::domain::job::TERMINAL)
+                ),
+                params![job, predecessor],
+                |r| r.get(0),
+            )?;
+            if !failed {
+                return Ok(None);
+            }
+        }
+        if state == next {
+            return Ok(Some(false));
         }
         state
             .transition(JobEvent::Queue(next))
@@ -222,9 +278,13 @@ impl Store {
             "UPDATE jobs SET state = ?2 WHERE id = ?1",
             params![job, next],
         )?;
+        tx.execute(
+            "UPDATE submissions SET attention_state = NULL WHERE job_id = ?1",
+            params![job],
+        )?;
         Self::event(&tx, job, next.as_str(), None)?;
         tx.commit()?;
-        Ok(())
+        Ok(Some(true))
     }
 
     pub fn resolve_job(&self, id: &str) -> Result<Option<String>> {
@@ -252,10 +312,16 @@ impl Store {
                 params![job, p],
             )?;
         }
-        tx.execute(
+        let changed = tx.execute(
             "UPDATE jobs SET state = 'queued' WHERE id = ?1 AND state = 'blocked'",
             params![job],
         )?;
+        if changed != 0 {
+            tx.execute(
+                "UPDATE submissions SET attention_state = NULL WHERE job_id = ?1",
+                params![job],
+            )?;
+        }
         Self::event(&tx, job, "unblocked", Some(&failed.join(",")))?;
         tx.commit()?;
         Ok(())

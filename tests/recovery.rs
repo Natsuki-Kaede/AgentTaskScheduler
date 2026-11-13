@@ -381,15 +381,20 @@ fn a_reparented_worker_remains_measured_and_records_later_growth() {
 
 #[test]
 fn executor_finish_retains_daemon_members_until_the_worker_exits() {
-    retained_finish(false);
+    retained_finish(false, false);
 }
 
 #[test]
 fn pending_finish_can_be_canceled_after_a_daemon_restart() {
-    retained_finish(true);
+    retained_finish(true, false);
 }
 
-fn retained_finish(cancel: bool) {
+#[test]
+fn cancel_terminates_a_daemon_only_worker_holding_output_pipes() {
+    retained_finish(true, true);
+}
+
+fn retained_finish(cancel: bool, inherited_output: bool) {
     struct Paused(Option<i32>);
     impl Paused {
         fn resume(&mut self) {
@@ -413,8 +418,13 @@ fn retained_finish(cancel: bool) {
     let spawn = home.path.join("review-spawn-worker");
     let marker = home.path.join("review-worker.pid");
     let release = home.path.join("release-parent");
+    let output = if inherited_output {
+        ""
+    } else {
+        ",stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL"
+    };
     let source = format!(
-        "import pathlib,subprocess,sys,time; pathlib.Path({}).write_text(str(__import__('os').getpid()))\nwhile not pathlib.Path({}).exists(): time.sleep(.02)\nchild=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'],start_new_session=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL); pathlib.Path({}).write_text(str(child.pid))\nwhile not pathlib.Path({}).exists(): time.sleep(.02)",
+        "import pathlib,subprocess,sys,time; pathlib.Path({}).write_text(str(__import__('os').getpid()))\nwhile not pathlib.Path({}).exists(): time.sleep(.02)\nchild=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'],start_new_session=True{output}); pathlib.Path({}).write_text(str(child.pid))\nwhile not pathlib.Path({}).exists(): time.sleep(.02)",
         serde_json::to_string(&ready.to_string_lossy()).unwrap(),
         serde_json::to_string(&spawn.to_string_lossy()).unwrap(),
         serde_json::to_string(&marker.to_string_lossy()).unwrap(),
@@ -484,6 +494,22 @@ fn retained_finish(cancel: bool) {
     );
     let before = members();
     paused.resume();
+    if inherited_output {
+        assert!(home.job(&job)["main_exit_code"].is_null());
+        let (waiting, _) =
+            submit_with_options(&home, "echo lock released", &["--lock", "review-finish"]);
+        assert!(home.ats(&["cancel", &sub]).status.success());
+        let output = home.ats(&["wait", &sub, "--wait", "10s"]);
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        assert_eq!(home.job(&job)["state"], "canceled");
+        assert!(members().is_empty());
+        assert_eq!(
+            home.ats(&["wait", &waiting, "--wait", "10s"]).stdout,
+            b"lock released\n"
+        );
+        worker.pid = None;
+        return;
+    }
     wait_until("main result", Duration::from_secs(5), || {
         home.job(&job)["main_exit_code"] == 0
     });

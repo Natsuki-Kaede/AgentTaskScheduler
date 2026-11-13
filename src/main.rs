@@ -99,7 +99,7 @@ enum Command {
         #[arg(last = true, required_unless_present = "sh")]
         argv: Vec<String>,
     },
-    /// Wait for a submission's job to end and report its state.
+    /// Wait for the job result or report a dependency or capacity issue.
     Wait {
         submission: String,
         /// How long to wait, including system sleep.
@@ -130,8 +130,8 @@ enum Command {
     Unblock { id: String },
     /// Cancel a submission; the job stops when no other submission wants it.
     Cancel { submission: String },
-    /// Leave a submission running in the background: the agent may stop
-    /// without waiting for it, and still hears when it ends.
+    /// Leave a submission in the background; results and blocked work are
+    /// reported at a later turn. Does not wake a stopped agent.
     Detach { submission: String },
     /// Add ats's hooks and instructions to Claude Code, Codex or DSH and start
     /// the daemon at login, after showing the changes and asking.
@@ -146,15 +146,19 @@ enum Command {
         /// agent's instructions yourself.
         #[arg(long)]
         service: bool,
+        /// Restart the login daemon after replacing the binary.
+        #[arg(long)]
+        restart: bool,
         #[command(flatten)]
         confirm: ConfirmArgs,
     },
     /// Remove what `ats install` added and put back the hooks it moved.
-    /// Without `--agent`, the daemon no longer starts at login.
+    /// Without `--agent`, remove all integrations in the current DSH home
+    /// and the daemon login service.
     Uninstall {
         #[arg(long)]
         agent: Vec<hook::Agent>,
-        /// DSH profile to remove ats from.
+        /// DSH profile to remove with `--agent dsh`.
         #[arg(long, default_value = "desktop")]
         dsh_profile: String,
         #[command(flatten)]
@@ -184,10 +188,29 @@ enum Command {
         #[arg(long)]
         spec: String,
     },
+    #[command(name = "__launch", hide = true)]
+    Launch {
+        #[arg(long)]
+        spec: String,
+        #[arg(long)]
+        gate: i32,
+    },
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    if let Command::Launch { spec, gate } = cli.command {
+        return match serde_json::from_str(&spec)
+            .map_err(anyhow::Error::from)
+            .and_then(|spec| executor::launch(spec, gate))
+        {
+            Ok(code) => code,
+            Err(error) => {
+                eprintln!("ats: {error:#}");
+                ExitCode::from(127)
+            }
+        };
+    }
     if !matches!(cli.command, Command::Daemon | Command::Executor { .. }) {
         // SAFETY: sets the default action before any thread starts.
         unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
@@ -228,9 +251,17 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
                 },
                 None => runspec::RunSpec::Argv { argv },
             };
-            if std::env::var_os(executor::JOB_ENV).is_some()
+            let inside_job = std::env::var_os(executor::JOB_ENV).is_some();
+            if let Some(hint) = options.hint.as_deref()
+                && let Err(error) = planner::predict::parse_hint(hint)
+            {
+                eprintln!("ats: submission rejected: --hint: {error}");
+                return Ok(ExitCode::from(cli::EXIT_REJECTED));
+            }
+            if inside_job
                 || (options.after.is_empty()
                     && options.lock.is_empty()
+                    && options.hint.is_none()
                     && runs_directly(&paths, &spec)?)
             {
                 use std::os::unix::process::CommandExt;
@@ -270,6 +301,7 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
             agent,
             dsh_profile,
             service,
+            restart,
             confirm,
         } => {
             let home = dirs::home_dir().context("no home directory")?;
@@ -285,16 +317,28 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
                 );
             }
             let ats = std::env::current_exe().context("locating the ats binary")?;
-            install::install(
+            let previous = if restart && !confirm.dry_run {
+                install::daemon_instance(&paths).await
+            } else {
+                None
+            };
+            let started = install::install(
                 &paths,
                 &home,
                 &dsh,
                 &agents,
                 &ats,
-                true,
+                if restart {
+                    install::Service::Restart
+                } else {
+                    install::Service::Ensure
+                },
                 confirm.mode(&mut std::io::stdin().lock()),
                 &mut std::io::stdout(),
             )?;
+            if started {
+                install::verify_daemon(&paths, previous.as_deref()).await?;
+            }
             Ok(ExitCode::SUCCESS)
         }
         Command::Instructions => {
@@ -346,6 +390,7 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
             let _ = std::fs::remove_file(error_log);
             Ok(ExitCode::SUCCESS)
         }
+        Command::Launch { .. } => unreachable!("handled before starting the runtime"),
     }
 }
 
