@@ -1,0 +1,493 @@
+src/store/history.rs
+  462492bf50b5c3d6 31,41,43,48,51,157-189
+src/app/submission.rs
+  462492bf50b5c3d6 51,122,157-189
+src/domain/resource.rs
+  462492bf50b5c3d6 93,96-111
+README.zh-CN.md
+  462492bf50b5c3d6 35-36,76
+  dec45be25e1f09fa 81
+src/main.rs
+  462492bf50b5c3d6 102,149-151,156-157,161,191-197,202-213,254-261,264,304,320-325,331-335,339-341,393
+  dec45be25e1f09fa 133-134
+src/runtime/family.rs
+  462492bf50b5c3d6 39,43,45,47,58-69,102,109,133,165,172,190,197,208-213,238-281,283-316
+src/sample/macos.rs
+  462492bf50b5c3d6 9-15,46-48,52-54
+Cargo.toml
+  462492bf50b5c3d6 3,25,31
+src/store/sched.rs
+  462492bf50b5c3d6 19-41,231-243,251-252,254-272,287
+  dec45be25e1f09fa 281-284,315,319-324
+src/recognize/mod.rs
+  462492bf50b5c3d6 9,34-35,66,78,97,179-187,209-220,308,311,315-326,424,443
+src/executor/launch.rs
+  462492bf50b5c3d6 1-69
+.github/workflows/ci.yml
+  462492bf50b5c3d6 22-31
+plugins/dsh/README.md
+  462492bf50b5c3d6 33,56
+  dec45be25e1f09fa 48
+src/executor/mod.rs
+  462492bf50b5c3d6 4,7,111,114-117,121-125,127-148,168-173,192-200,209,223-225,234-245,253-265,269,272-287,290,295-307,331,338,342,344,346,349,351,355,364,370,374-376,384-398,531-570,805
+src/hook.rs
+  462492bf50b5c3d6 88,106-116,119,179-204
+  dec45be25e1f09fa 10,78,81-87,89-105,117-118,126-127,129,134,141-142,144,150
+INSTALL.md
+  462492bf50b5c3d6 20-23,75,99-113
+tests/recovery.rs
+  462492bf50b5c3d6 384,389,392-397,421-425,427,497-512
+src/install/mod.rs
+  dec45be25e1f09fa 55
+  462492bf50b5c3d6 3,5,7,26-33,53-54,73-74,336,339-353,360-361,365,372-423,431,435,506-510,514,516-517,519,533-556,560-567,572-574,603-605,612-630,632-645,647-657,665,670,687-688,691-699,714-730,732,734,741-742,754-759,763-769,773-780,782-784,840,857,884,894-1040,1086-1089,1120,1179,1247,1284,1315,1375,1391,1429,1449,1470,1492
+tests/execution.rs
+  462492bf50b5c3d6 1-326
+src/app/queries.rs
+  462492bf50b5c3d6 45-47
+  dec45be25e1f09fa 58-91
+src/app/monitor.rs
+  462492bf50b5c3d6 18-22,46-56,174-177,184,304-306,315,368-370,377
+src/planner/mod.rs
+  462492bf50b5c3d6 6,18,26
+docs/architecture.md
+  462492bf50b5c3d6 38-39,44,61,63,75,83-84,92-93,95,103
+  dec45be25e1f09fa 91,99-102,104-105,122-124
+src/install/dsh.rs
+  462492bf50b5c3d6 156,159,162,165-169,172-173,176-184,186-212,227,229-231,233-235,240-250,253,257-261,283,295,334,400-504
+src/procinfo.rs
+  462492bf50b5c3d6 27-35,40-45,47,107,155,160
+src/store/reminders.rs
+  dec45be25e1f09fa 1-321
+scripts/check-upgrade.py
+  dec45be25e1f09fa 16,37-38,49,85,105-106,116,128-129,136,144
+README.md
+  dec45be25e1f09fa 83
+  462492bf50b5c3d6 37-38,78
+src/store/schema_v6.sql
+  462492bf50b5c3d6 10-17
+  dec45be25e1f09fa 1-9
+src/daemon/mod.rs
+  462492bf50b5c3d6 26-32,95
+src/runtime/registry.rs
+  462492bf50b5c3d6 16-24
+src/api/lifecycle.rs
+  462492bf50b5c3d6 17,67-74
+  dec45be25e1f09fa 27,156-158
+src/profile.rs
+  462492bf50b5c3d6 110-114,236-237
+src/install/service.rs
+  462492bf50b5c3d6 77-78,83-84,89-98,100-118,120,122,125,127,196,199,240-252
+src/protocol.rs
+  462492bf50b5c3d6 116-120,222-239
+src/planner/predict.rs
+  462492bf50b5c3d6 40-43
+src/app/recovery.rs
+  462492bf50b5c3d6 42-46,97,133,135-138,143,155-162,164,166,169,228-229,337
+src/domain/process.rs
+  462492bf50b5c3d6 11-12,34
+src/store/mod.rs
+  462492bf50b5c3d6 46,54-55,342
+  dec45be25e1f09fa 13,20,22,37,138-140,357-363,410,412
+src/app/scheduling.rs
+  462492bf50b5c3d6 151-155
+src/planner/locks.rs
+  462492bf50b5c3d6 2,72-82,84-121,123-139,142-160,163-177,179-184,186,196-198,203-211,219,240,348-360,389-395,424-430,439,443-540
+src/sample/tests.rs
+  462492bf50b5c3d6 24-25
+CHANGELOG.md
+  462492bf50b5c3d6 3-38,93
+api/openapi.yaml
+  462492bf50b5c3d6 4,61,172-192,281,451-458
+  dec45be25e1f09fa 299,309,341-353,547
+src/executor/jobserver.rs
+  462492bf50b5c3d6 3-4,36-44,95-98,104-113
+src/cli.rs
+  462492bf50b5c3d6 8,13,141,146-151,197-201,210-215,217-225,232,238,247-248,257-259,299,308-309,320-325,333-334,401-403,446,455
+  dec45be25e1f09fa 419-423
+src/app/jobs.rs
+  462492bf50b5c3d6 24-40,44-70,114-115,117-123,215-219,286
+src/api/mod.rs
+  462492bf50b5c3d6 84
+src/store/lifecycle.rs
+  462492bf50b5c3d6 55,112,161-162,193-236,238,329-403
+src/store/background.rs
+  dec45be25e1f09fa 136
+src/store/processes.rs
+  462492bf50b5c3d6 8-10,22-84,160,163-246
+src/channel.rs
+  462492bf50b5c3d6 3-5,14,20-22,46-47,49-75,78-108,110-114,117-124,128-143,146,154-161,182,184-189,193,201-222,229,301-374
+src/domain/job.rs
+  462492bf50b5c3d6 262-263,282
+tests/hook.rs
+  462492bf50b5c3d6 50-59
+  dec45be25e1f09fa 250-364
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.10",
+  "base_commit_sha": "3bed1f467ee762b8e5c7ae49df5699dde54e39a1",
+  "prompts": {
+    "462492bf50b5c3d6": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1d487-bdb4-7fd3-bf7b-500e4181562e",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Natsuki-Kaede",
+      "messages": [],
+      "total_additions": 3130,
+      "total_deletions": 593,
+      "accepted_lines": 2862,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "src/profile.rs": {
+          "additions": 7,
+          "deletions": 1,
+          "accepted_lines": 7
+        },
+        "src/store/sched.rs": {
+          "additions": 59,
+          "deletions": 3,
+          "accepted_lines": 59
+        },
+        "src/main.rs": {
+          "additions": 55,
+          "deletions": 10,
+          "accepted_lines": 51
+        },
+        "src/protocol.rs": {
+          "additions": 26,
+          "deletions": 2,
+          "accepted_lines": 24
+        },
+        "src/planner/locks.rs": {
+          "additions": 282,
+          "deletions": 54,
+          "accepted_lines": 253
+        },
+        "src/executor/jobserver.rs": {
+          "additions": 28,
+          "deletions": 11,
+          "accepted_lines": 26
+        },
+        "src/install/service.rs": {
+          "additions": 54,
+          "deletions": 18,
+          "accepted_lines": 52
+        },
+        "src/daemon/mod.rs": {
+          "additions": 9,
+          "deletions": 1,
+          "accepted_lines": 8
+        },
+        "README.zh-CN.md": {
+          "additions": 3,
+          "deletions": 1,
+          "accepted_lines": 3
+        },
+        "src/planner/mod.rs": {
+          "additions": 3,
+          "deletions": 1,
+          "accepted_lines": 3
+        },
+        "src/app/scheduling.rs": {
+          "additions": 5,
+          "deletions": 3,
+          "accepted_lines": 5
+        },
+        "src/procinfo.rs": {
+          "additions": 22,
+          "deletions": 1,
+          "accepted_lines": 22
+        },
+        "src/store/processes.rs": {
+          "additions": 157,
+          "deletions": 5,
+          "accepted_lines": 152
+        },
+        "src/channel.rs": {
+          "additions": 234,
+          "deletions": 46,
+          "accepted_lines": 217
+        },
+        "src/install/dsh.rs": {
+          "additions": 189,
+          "deletions": 45,
+          "accepted_lines": 179
+        },
+        "src/store/schema_v6.sql": {
+          "additions": 8,
+          "accepted_lines": 8
+        },
+        "src/recognize/mod.rs": {
+          "additions": 50,
+          "deletions": 7,
+          "accepted_lines": 45
+        },
+        ".github/workflows/ci.yml": {
+          "additions": 10,
+          "accepted_lines": 10
+        },
+        "src/hook.rs": {
+          "additions": 42,
+          "deletions": 11,
+          "accepted_lines": 40
+        },
+        "src/app/recovery.rs": {
+          "additions": 32,
+          "deletions": 16,
+          "accepted_lines": 27
+        },
+        "src/store/history.rs": {
+          "additions": 41,
+          "deletions": 6,
+          "accepted_lines": 38
+        },
+        "INSTALL.md": {
+          "additions": 20,
+          "deletions": 1,
+          "accepted_lines": 20
+        },
+        "tests/hook.rs": {
+          "additions": 10,
+          "accepted_lines": 10
+        },
+        "tests/execution.rs": {
+          "additions": 387,
+          "deletions": 61,
+          "accepted_lines": 326
+        },
+        "src/runtime/registry.rs": {
+          "additions": 9,
+          "deletions": 2,
+          "accepted_lines": 9
+        },
+        "Cargo.toml": {
+          "additions": 3,
+          "deletions": 3,
+          "accepted_lines": 3
+        },
+        "src/install/mod.rs": {
+          "additions": 453,
+          "deletions": 107,
+          "accepted_lines": 414
+        },
+        "src/app/submission.rs": {
+          "additions": 35,
+          "accepted_lines": 35
+        },
+        "src/app/monitor.rs": {
+          "additions": 36,
+          "deletions": 10,
+          "accepted_lines": 29
+        },
+        "src/store/mod.rs": {
+          "additions": 5,
+          "deletions": 3,
+          "accepted_lines": 4
+        },
+        "src/api/mod.rs": {
+          "additions": 1,
+          "accepted_lines": 1
+        },
+        "src/planner/predict.rs": {
+          "additions": 4,
+          "deletions": 1,
+          "accepted_lines": 4
+        },
+        "src/store/lifecycle.rs": {
+          "additions": 131,
+          "deletions": 11,
+          "accepted_lines": 125
+        },
+        "src/runtime/family.rs": {
+          "additions": 112,
+          "deletions": 9,
+          "accepted_lines": 108
+        },
+        "src/domain/resource.rs": {
+          "additions": 18,
+          "accepted_lines": 18
+        },
+        "src/domain/process.rs": {
+          "additions": 3,
+          "accepted_lines": 3
+        },
+        "src/executor/mod.rs": {
+          "additions": 214,
+          "deletions": 65,
+          "accepted_lines": 189
+        },
+        "CHANGELOG.md": {
+          "additions": 38,
+          "deletions": 2,
+          "accepted_lines": 37
+        },
+        "src/app/queries.rs": {
+          "additions": 3,
+          "accepted_lines": 3
+        },
+        "src/sample/macos.rs": {
+          "additions": 15,
+          "deletions": 5,
+          "accepted_lines": 13
+        },
+        "src/domain/job.rs": {
+          "additions": 3,
+          "accepted_lines": 3
+        },
+        "tests/recovery.rs": {
+          "additions": 30,
+          "deletions": 4,
+          "accepted_lines": 30
+        },
+        "docs/architecture.md": {
+          "additions": 16,
+          "deletions": 8,
+          "accepted_lines": 13
+        },
+        "src/app/jobs.rs": {
+          "additions": 87,
+          "deletions": 33,
+          "accepted_lines": 64
+        },
+        "src/sample/tests.rs": {
+          "additions": 2,
+          "accepted_lines": 2
+        },
+        "api/openapi.yaml": {
+          "additions": 32,
+          "deletions": 2,
+          "accepted_lines": 32
+        },
+        "src/cli.rs": {
+          "additions": 59,
+          "deletions": 16,
+          "accepted_lines": 55
+        },
+        "src/api/lifecycle.rs": {
+          "additions": 9,
+          "accepted_lines": 9
+        },
+        "plugins/dsh/README.md": {
+          "additions": 2,
+          "deletions": 2,
+          "accepted_lines": 2
+        },
+        "src/executor/launch.rs": {
+          "additions": 74,
+          "deletions": 5,
+          "accepted_lines": 69
+        },
+        "README.md": {
+          "additions": 3,
+          "deletions": 1,
+          "accepted_lines": 3
+        }
+      }
+    },
+    "dec45be25e1f09fa": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1d44e-54c9-7ee2-be67-cd0dbf843b05",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Natsuki-Kaede",
+      "messages": [],
+      "total_additions": 618,
+      "total_deletions": 84,
+      "accepted_lines": 659,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "src/install/mod.rs": {
+          "additions": 2,
+          "deletions": 1,
+          "accepted_lines": 1
+        },
+        "scripts/check-upgrade.py": {
+          "additions": 13,
+          "deletions": 8,
+          "accepted_lines": 13
+        },
+        "plugins/dsh/README.md": {
+          "additions": 1,
+          "deletions": 1,
+          "accepted_lines": 1
+        },
+        "src/store/reminders.rs": {
+          "additions": 321,
+          "accepted_lines": 321
+        },
+        "src/cli.rs": {
+          "additions": 5,
+          "deletions": 1,
+          "accepted_lines": 5
+        },
+        "src/store/background.rs": {
+          "additions": 1,
+          "deletions": 1,
+          "accepted_lines": 1
+        },
+        "api/openapi.yaml": {
+          "additions": 16,
+          "deletions": 3,
+          "accepted_lines": 16
+        },
+        "src/main.rs": {
+          "additions": 2,
+          "deletions": 2,
+          "accepted_lines": 2
+        },
+        "src/store/mod.rs": {
+          "additions": 16,
+          "deletions": 48,
+          "accepted_lines": 16
+        },
+        "README.md": {
+          "additions": 1,
+          "deletions": 1,
+          "accepted_lines": 1
+        },
+        "docs/architecture.md": {
+          "additions": 14,
+          "deletions": 2,
+          "accepted_lines": 12
+        },
+        "README.zh-CN.md": {
+          "additions": 1,
+          "deletions": 1,
+          "accepted_lines": 1
+        },
+        "private/release-v0.1.3.md": {
+          "accepted_lines": 53
+        },
+        "src/hook.rs": {
+          "additions": 45,
+          "deletions": 14,
+          "accepted_lines": 36
+        },
+        "src/store/schema_v6.sql": {
+          "additions": 9,
+          "accepted_lines": 9
+        },
+        "src/app/queries.rs": {
+          "additions": 34,
+          "accepted_lines": 34
+        },
+        "src/store/sched.rs": {
+          "additions": 11,
+          "deletions": 1,
+          "accepted_lines": 11
+        },
+        "tests/hook.rs": {
+          "additions": 115,
+          "accepted_lines": 115
+        },
+        "src/api/lifecycle.rs": {
+          "additions": 11,
+          "accepted_lines": 11
+        }
+      }
+    }
+  }
+}
