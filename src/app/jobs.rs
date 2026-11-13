@@ -97,6 +97,7 @@ impl App {
                 max_rss,
             },
         )?;
+        self.contact(id);
         self.settle_finished(id, crate::procinfo::probe)?;
         self.notify();
         Ok(())
@@ -235,6 +236,27 @@ mod completion_tests {
     use crate::domain::job::{Entry, NewSubmission, Plan};
     use crate::domain::process::{Process, ProcessIdentity};
     use crate::store::Store;
+
+    #[test]
+    fn a_completion_report_satisfies_the_restart_reconnect_gate() {
+        let mut store = Store::open_in_memory().unwrap();
+        let created = store
+            .create_submission(&crate::store::tests::sample("make"))
+            .unwrap();
+        store.set_executor(&created.job, 10, "executor").unwrap();
+        store.admit(&created.job, 100, 1).unwrap();
+        store.set_started(&created.job, "/logs", None).unwrap();
+        let app = App::new(store, "test".into(), "instance".into());
+        *app.observations.lock().unwrap() = Some(Default::default());
+        app.expect_reconnects(
+            [created.job.clone()].into_iter().collect(),
+            Duration::from_secs(10),
+        );
+        assert!(!app.admitting());
+        app.finished(&created.job, JobState::Completed, Some(0), None)
+            .unwrap();
+        assert!(app.admitting());
+    }
 
     #[test]
     fn completion_retains_unknown_or_concurrently_changed_members() {
