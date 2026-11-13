@@ -1,0 +1,48 @@
+src/app/jobs.rs
+  462492bf50b5c3d6 100,240-259
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.10",
+  "base_commit_sha": "91c75fa69afa6c5f1488ce52176cd9cb9abe24d3",
+  "prompts": {
+    "462492bf50b5c3d6": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1d487-bdb4-7fd3-bf7b-500e4181562e",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Natsuki-Kaede",
+      "messages": [],
+      "total_additions": 24,
+      "total_deletions": 2,
+      "accepted_lines": 22,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "src/app/jobs.rs": {
+          "additions": 24,
+          "deletions": 2,
+          "accepted_lines": 22
+        }
+      }
+    },
+    "dec45be25e1f09fa": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1d44e-54c9-7ee2-be67-cd0dbf843b05",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Natsuki-Kaede",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 53,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "private/release-v0.1.3.md": {
+          "accepted_lines": 53
+        }
+      }
+    }
+  }
+}
