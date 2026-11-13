@@ -1,5 +1,4 @@
--- Base schema. Store::init applies later additions transactionally.
--- Only the daemon opens this database.
+-- Defines the base SQLite schema.
 
 CREATE TABLE jobs (
     id                  TEXT PRIMARY KEY,

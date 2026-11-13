@@ -1,10 +1,4 @@
-# Built-in tool profiles (design 8.2). Memory figures include allocations
-# outside the private range, such as GPU memory, and are starting points:
-# measured history replaces them after the first runs (design 8.3).
-# Files in the data directory's profiles.d/ add profiles or replace these by
-# name.
-
-# Shell builtins and small utilities --------------------------------------
+# Built-in tool profiles for recognition and resource prediction.
 
 [[profile]]
 name = "shell-builtin"
@@ -106,8 +100,6 @@ class = "light"
 writes = "args"
 interactive = true
 
-# Git ---------------------------------------------------------------------
-
 [[profile]]
 name = "git-light"
 program = ["git"]
@@ -149,8 +141,6 @@ value_flags = ["-C", "-c", "--git-dir", "--work-tree"]
 subcommand = ["clone", "fetch", "pull", "push", "submodule", "lfs"]
 class = "medium"
 writes = "project"
-
-# Rust --------------------------------------------------------------------
 
 [[profile]]
 name = "cargo-build"
@@ -212,8 +202,6 @@ program = ["rustc"]
 class = "heavy"
 mem = "1G"
 
-# C, C++, Swift, Apple ----------------------------------------------------
-
 [[profile]]
 name = "make"
 program = ["make", "gmake"]
@@ -270,8 +258,6 @@ write_paths = [".build"]
 mem = "3G"
 parallelism = { flag = "-j" }
 
-# Go ----------------------------------------------------------------------
-
 [[profile]]
 name = "go-build"
 program = ["go"]
@@ -295,8 +281,6 @@ program = ["go"]
 subcommand = ["mod download", "mod tidy", "get"]
 class = "medium"
 writes = "project"
-
-# JavaScript and TypeScript -----------------------------------------------
 
 [[profile]]
 name = "js-install"
@@ -348,8 +332,6 @@ subcommand = ["start", "run-android", "run-ios", "bundle"]
 class = "heavy"
 mem = "3G"
 
-# Python ------------------------------------------------------------------
-
 [[profile]]
 name = "pytest"
 program = ["pytest", "py.test", "tox", "nox"]
@@ -379,8 +361,6 @@ class = "heavy"
 writes = "project"
 mem = "1G"
 
-# Android, JVM -------------------------------------------------------------
-
 [[profile]]
 name = "gradle"
 program = ["gradle", "gradlew"]
@@ -403,8 +383,6 @@ program = ["adb", "xcrun"]
 class = "medium"
 writes = "none"
 
-# Containers and system packages ------------------------------------------
-
 [[profile]]
 name = "docker-build"
 program = ["docker", "podman"]
@@ -420,8 +398,6 @@ subcommand = ["install", "upgrade", "reinstall", "update"]
 class = "heavy"
 writes = "none"
 mem = "1G"
-
-# Local inference ---------------------------------------------------------
 
 [[profile]]
 name = "mlx-lm"

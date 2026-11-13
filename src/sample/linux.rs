@@ -1,11 +1,10 @@
-//! Linux readings (design 9) from `/proc` and the cgroup file system. None
+//! Linux readings from `/proc` and the cgroup file system. None
 //! of them needs root.
 
 use std::path::Path;
 
 use super::{Memory, System};
 
-/// Values of `Key: value` lines, as in `/proc/meminfo`, in their unit.
 fn field(text: &str, key: &str) -> Option<u64> {
     text.lines().find_map(|l| {
         let rest = l.strip_prefix(key)?.strip_prefix(':')?;
@@ -13,7 +12,6 @@ fn field(text: &str, key: &str) -> Option<u64> {
     })
 }
 
-/// Values of `key value` lines, as in `/proc/vmstat` and `memory.stat`.
 fn stat(text: &str, key: &str) -> Option<u64> {
     text.lines().find_map(|l| {
         let (k, v) = l.split_once(' ')?;
@@ -25,8 +23,6 @@ fn read(path: impl AsRef<Path>) -> Option<String> {
     std::fs::read_to_string(path).ok()
 }
 
-/// 4 (critical) while tasks stall on memory, all at once, for 10% of the
-/// last 10 seconds; 1 otherwise or without pressure stall information.
 fn pressure() -> u8 {
     let full = read("/proc/pressure/memory").and_then(|t| {
         let line = t.lines().find(|l| l.starts_with("full "))?;
@@ -55,8 +51,6 @@ pub fn system() -> Option<System> {
         .and_then(|t| stat(&t, "pswpout"))
         .unwrap_or(0);
     Some(System {
-        // Execution cgroups are checked separately per executor at admission.
-        // The daemon's own cgroup is not necessarily the command's resource domain.
         mem_total: total,
         mem_used: used,
         pressure: pressure(),
@@ -65,8 +59,6 @@ pub fn system() -> Option<System> {
     })
 }
 
-/// Resident and swapped anonymous memory, without shared memory and files
-/// (design 10.1).
 pub fn memory(pid: i32) -> Option<Memory> {
     let status = read(format!("/proc/{pid}/status"))?;
     Some(Memory {
@@ -97,7 +89,6 @@ mod tests {
             s.pressure
         );
 
-        // 64 MB of touched anonymous memory shows up.
         let me = std::process::id() as i32;
         let base = memory(me).unwrap();
         let block = vec![1u8; 64 << 20];

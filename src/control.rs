@@ -1,21 +1,10 @@
-//! Background QoS (design 10.2) on macOS: lower CPU priority, the
-//! efficiency cores and lower disk priority. The same user can undo it; the
-//! system cannot report it, so the caller keeps track of what it set.
-//!
-//! Linux has no equivalent: a user without privileges cannot raise a
-//! priority again after lowering it, so jobs keep their priority.
+//! Applies platform-specific background QoS to job processes.
 
-/// Moves a process to or from background QoS. Children started afterwards
-/// inherit it. Returns false when the process is gone or the system has no
-/// background QoS.
 #[cfg(target_os = "linux")]
 pub fn set_background(_pid: i32, _on: bool) -> bool {
     false
 }
 
-/// Moves a process to or from background QoS. Children started afterwards
-/// inherit it. Returns false when the process is gone or the system has no
-/// background QoS.
 #[cfg(target_os = "macos")]
 pub fn set_background(pid: i32, on: bool) -> bool {
     const PRIO_DARWIN_PROCESS: i32 = 4;
@@ -30,11 +19,9 @@ pub fn set_background(pid: i32, on: bool) -> bool {
     }
 }
 
-/// Read the first thread's base priority in these single-threaded test children.
-/// `ps pri` reports dynamic priority; task priority misses inherited thread QoS.
 #[cfg(all(test, target_os = "macos"))]
 pub(crate) fn test_priority(pid: i32) -> i32 {
-    const PROC_PIDLISTTHREADS: i32 = 6; // sys/proc_info.h; not exported by libc.
+    const PROC_PIDLISTTHREADS: i32 = 6;
     let mut thread = 0u64;
     // SAFETY: the output buffer holds exactly one thread identifier.
     let read = unsafe {

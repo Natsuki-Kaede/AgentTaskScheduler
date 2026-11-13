@@ -4,34 +4,23 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 
-/// Environment variable that overrides the data directory. Tests and
-/// side-by-side instances use it.
 pub const HOME_ENV: &str = "ATS_HOME";
 
-/// Paths shared by the daemon and its clients.
 #[derive(Debug, Clone)]
 pub struct Paths {
-    /// Data directory: database, socket, lock and logs.
     pub home: PathBuf,
     pub db: PathBuf,
     pub socket: PathBuf,
     pub lock: PathBuf,
     pub logs: PathBuf,
     pub config: PathBuf,
-    /// Hooks earlier versions of `ats install` moved, which it puts back.
     pub installed: PathBuf,
-    /// User tool profiles (design 8.2).
     pub profiles: PathBuf,
-    /// Private temporary files shared by this instance's clients.
     pub temporary: PathBuf,
-    /// Request-file channel. It lives under the temporary directory because
-    /// sandboxed agents can usually write there but not to the data
-    /// directory (design 4).
     pub requests: PathBuf,
 }
 
 impl Paths {
-    /// Resolves paths from `ATS_HOME`, or the platform data directory.
     pub fn from_env() -> Result<Self> {
         match std::env::var_os(HOME_ENV) {
             Some(home) => {
@@ -51,7 +40,6 @@ impl Paths {
         }
     }
 
-    /// Builds paths under `home`, with the request channel at `requests`.
     pub fn with(home: PathBuf, requests: PathBuf) -> Self {
         Self {
             temporary: requests
@@ -75,7 +63,6 @@ fn temporary_root(base: &std::path::Path, uid: u32) -> PathBuf {
     base.join(format!("ats-{uid}"))
 }
 
-/// Creates the channel directory, readable only by the current user.
 pub fn create_private_dir(dir: &std::path::Path) -> Result<()> {
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     #[cfg(unix)]

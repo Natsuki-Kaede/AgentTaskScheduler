@@ -26,7 +26,6 @@ pub fn router(state: App) -> Router {
         .with_state(state)
 }
 
-/// An error answered as JSON with a status code.
 pub struct ApiError(pub StatusCode, pub String);
 
 impl From<InvalidInput> for ApiError {

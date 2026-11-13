@@ -24,27 +24,17 @@ pub struct App {
     store: Arc<Mutex<Store>>,
     started_at: String,
     instance: String,
-    /// Bumped after every change to jobs or submissions, so that waiting
-    /// requests re-check their condition.
     changes: Arc<tokio::sync::watch::Sender<u64>>,
-    /// Executors expected to reconnect after a restart, and until when
-    /// leases wait for them (design 7.1).
     reconnect: Arc<Mutex<(HashSet<String>, Deadline)>>,
     stopping: Arc<AtomicBool>,
-    /// The latest resource measurements (design 9).
     measurements: Arc<Mutex<Snapshot>>,
     profiles: Arc<Profiles>,
-    /// Wrapper programs from the configuration (design 8.1).
     wrappers: Arc<Vec<String>>,
-    /// Jobs someone is waiting for, with how many waits (design 10.3).
     awaited: Arc<Mutex<HashMap<String, usize>>>,
-    /// The scheduler's latest verdict on each waiting job, for `ats why`.
     verdicts: Arc<Mutex<HashMap<String, Verdict>>>,
-    /// Memory pressure and what it is doing (design 10.2).
     pressure: Arc<Mutex<PressureStatus>>,
 }
 
-/// Counts a wait on a job while it lasts.
 pub struct Awaiting {
     awaited: Arc<Mutex<HashMap<String, usize>>>,
     job: String,
@@ -81,8 +71,6 @@ impl App {
         }
     }
 
-    /// Uses the user's profiles and wrapper list instead of the built-in
-    /// profiles alone.
     pub fn with_recognition(mut self, profiles: Profiles, wrappers: Vec<String>) -> Self {
         self.profiles = Arc::new(profiles);
         self.wrappers = Arc::new(wrappers);
@@ -111,18 +99,14 @@ impl App {
             .collect()
     }
 
-    /// Holds leases until each of these jobs' executors has contacted the
-    /// daemon, or until `grace` has passed.
     pub fn expect_reconnects(&self, jobs: HashSet<String>, grace: Duration) {
         *self.reconnect.lock().expect("reconnect lock") = (jobs, Deadline::after(Some(grace)));
     }
 
-    /// Records that a job's executor reached the daemon.
     fn contact(&self, job: &str) {
         self.reconnect.lock().expect("reconnect lock").0.remove(job);
     }
 
-    /// False while executors are still reconnecting after a restart.
     fn admitting(&self) -> bool {
         if self
             .observations
@@ -136,7 +120,6 @@ impl App {
         r.0.is_empty() || r.1.expired()
     }
 
-    /// Ends held requests so the daemon can stop.
     pub fn stop(&self) {
         self.stopping.store(true, Ordering::SeqCst);
         self.notify();
@@ -146,7 +129,6 @@ impl App {
         self.stopping.load(Ordering::SeqCst)
     }
 
-    /// Wakes requests waiting for a change.
     fn notify(&self) {
         self.changes.send_modify(|n| *n += 1);
     }

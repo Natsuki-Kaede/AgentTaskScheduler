@@ -1,8 +1,4 @@
-//! Request-file channel (design 4): for clients that cannot reach the unix
-//! socket, such as agents in a sandbox without network access. A client
-//! writes `<id>.req`, the daemon answers with `<id>.resp`. Both are written
-//! to a temporary name first and renamed, so a reader never sees a partial
-//! file.
+//! Exchanges daemon requests and responses through files.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -40,7 +36,6 @@ fn write_atomically(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// Answers requests found in `dir` until the task is dropped.
 pub async fn serve(dir: PathBuf, router: Router) -> Result<()> {
     create_private_dir(&dir)?;
     loop {
@@ -49,8 +44,6 @@ pub async fn serve(dir: PathBuf, router: Router) -> Result<()> {
             if path.extension().is_none_or(|e| e != "req") {
                 continue;
             }
-            // Claim the request before answering it in its own task, so a
-            // long wait does not hold up the requests behind it.
             let raw = match std::fs::read(&path)
                 .and_then(|raw| std::fs::remove_file(&path).map(|()| raw))
             {
@@ -99,7 +92,6 @@ async fn dispatch(router: &Router, req: FileRequest) -> Result<FileResponse> {
     Ok(FileResponse { status, body })
 }
 
-/// Sends one request through the channel and waits up to `timeout`.
 pub async fn request(dir: &Path, req: &FileRequest, timeout: Duration) -> Result<FileResponse> {
     let id = crate::ids::new("r");
     let req_path = dir.join(format!("{id}.req"));
@@ -114,7 +106,6 @@ pub async fn request(dir: &Path, req: &FileRequest, timeout: Duration) -> Result
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    // Withdraw the request so a daemon that starts later does not act on it.
     let _ = std::fs::remove_file(&req_path);
     bail!("no answer through {} within {timeout:?}", dir.display())
 }

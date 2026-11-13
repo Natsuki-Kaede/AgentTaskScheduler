@@ -16,8 +16,6 @@ const PLUGIN_FILES: [(&str, &str); 3] = [
     ("index.js", include_str!("../../plugins/dsh/index.js")),
 ];
 
-/// Explicit locations keep tests and alternate user homes independent of the
-/// invoking DSH process's environment.
 pub struct DshConfig<'a> {
     pub home: PathBuf,
     pub profile: &'a str,
@@ -155,8 +153,6 @@ pub(super) fn install(user: &Path, config: &DshConfig<'_>, ats: &Path) -> Result
     Ok(changes)
 }
 
-/// Instructions and plugin files are shared by profiles. Keep them until the
-/// last profile removes its bundle and dependency.
 fn used_elsewhere(config: &DshConfig<'_>) -> Result<bool> {
     let entries = match std::fs::read_dir(config.home.join("profiles")) {
         Ok(entries) => entries,
@@ -222,8 +218,6 @@ pub(super) fn uninstall(user: &Path, config: &DshConfig<'_>) -> Result<Vec<Chang
     Ok(changes)
 }
 
-/// Use DSH's own package manager to refresh the profile's links and lockfile.
-/// Installation retries this even if the files already match.
 pub(super) fn link(config: &DshConfig<'_>, out: &mut impl Write) -> Result<()> {
     let profile = config.profile;
     let binary = std::env::var_os("DSH_BIN")

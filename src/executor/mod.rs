@@ -1,6 +1,4 @@
-//! The executor (design 7): a process detached from the agent's tool call
-//! that waits for its lease, runs the command, keeps its output, and reports
-//! the main execution process result and a completion claim to the daemon.
+//! Runs leased jobs, captures output and reports results.
 
 mod jobserver;
 mod logwriter;
@@ -24,23 +22,16 @@ use crate::protocol::{
 use crate::runspec::RunSpec;
 use logwriter::CappedLog;
 
-/// Per-stream log cap: a 24 MB head on disk plus a 1 MB tail kept in memory,
-/// so one job's two streams stay within 50 MB (design 7.2).
 const LOG_HEAD: usize = 24 << 20;
 const LOG_TAIL: usize = 1 << 20;
 const CONTROL_POLL: Duration = Duration::from_millis(500);
 const GROUP_POLL: Duration = Duration::from_millis(250);
 const TERM_GRACE: Duration = Duration::from_secs(5);
 
-/// Tells hooks and `ats run` inside a job not to queue nested commands
-/// (design 6.3).
 pub const JOB_ENV: &str = "ATS_JOB_ID";
 
 const RETRY: Duration = Duration::from_millis(500);
 
-/// Sends a report until the daemon answers it; the daemon may be
-/// restarting, and the job carries on meanwhile (design 7.1). Reports are
-/// idempotent, so a repeat after a lost answer is harmless.
 async fn report(paths: &Paths, path: &str, body: impl serde::Serialize) -> Result<client::Answer> {
     let body = serde_json::to_value(body)?;
     loop {
@@ -61,9 +52,6 @@ async fn post(paths: &Paths, path: &str, body: impl serde::Serialize) -> Result<
     Ok(answer.body)
 }
 
-/// Registers this executor and waits for the lease. Returns the lease's
-/// terms, or `None` when the job ended before it could start, for example
-/// by being canceled.
 async fn acquire_lease(paths: &Paths, job: &str) -> Result<Option<LeaseTerms>> {
     let pid = std::process::id() as i32;
     let start = procinfo::start_time(pid).context("reading this process's start time")?;
@@ -106,8 +94,6 @@ async fn acquire_lease(paths: &Paths, job: &str) -> Result<Option<LeaseTerms>> {
     }
 }
 
-/// Chooses the log directory: the data directory when writable, else the
-/// temporary directory, which sandboxed agents can write (design 4).
 fn log_dir(paths: &Paths, job: &str) -> Result<PathBuf> {
     let preferred = paths.logs.join(job);
     if std::fs::create_dir_all(&preferred).is_ok() {
@@ -141,7 +127,6 @@ fn exit_code(status: std::process::ExitStatus) -> i64 {
         .unwrap_or(-1)
 }
 
-/// Runs one job and reports completion. The daemon confirms owned members have exited.
 pub async fn run(paths: Paths, job: String, spec: RunSpec, cwd: PathBuf) -> Result<()> {
     let Some(terms) = acquire_lease(&paths, &job).await? else {
         return Ok(());
@@ -149,8 +134,6 @@ pub async fn run(paths: Paths, job: String, spec: RunSpec, cwd: PathBuf) -> Resu
 
     let dir = log_dir(&paths, &job)?;
     let mut cmd = tokio::process::Command::from(spec.command());
-    // Parallelism from the lease (design 10.5); what the submitter set
-    // itself stays.
     if let Some(n) = terms.parallelism {
         for var in &terms.env {
             if std::env::var_os(var).is_none() {
@@ -174,7 +157,6 @@ pub async fn run(paths: Paths, job: String, spec: RunSpec, cwd: PathBuf) -> Resu
     result
 }
 
-/// Starts the command and follows it to its terminal state.
 async fn run_command(
     paths: &Paths,
     job: &str,
@@ -183,9 +165,6 @@ async fn run_command(
     dir: &Path,
 ) -> Result<()> {
     let (paths, job) = (paths.clone(), job.to_string());
-    // Keep the group alive until its id is committed and the command has
-    // joined it. If this executor dies before registration, EOF makes the
-    // leader exit without having started any user command.
     let mut leader = tokio::process::Command::new("/bin/sh")
         .args(["-c", "read -r _"])
         .stdin(Stdio::piped())
@@ -266,8 +245,6 @@ async fn run_command(
     }
     let main = main.expect("main result");
 
-    // The main execution process result needs the process to have exited
-    // and both output streams to have reached the end (design 3).
     let streams = async {
         out.await??;
         err.await??;
@@ -293,7 +270,6 @@ async fn run_command(
     )
     .await?;
 
-    // Descendants can leave the original group while remaining job work.
     procinfo::refresh(&mut family, pgid);
     while !family.is_empty() {
         tokio::select! {
@@ -314,20 +290,15 @@ async fn run_command(
     Ok(())
 }
 
-/// The end report, with the largest resident size of any process the
-/// command waited for, in bytes: sampling misses commands shorter than its
-/// interval (design 8.3).
 fn ended(state: JobState, exit_code: Option<i64>) -> FinishedRequest {
     // SAFETY: getrusage fills the struct.
     let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
     // SAFETY: as above.
     unsafe { libc::getrusage(libc::RUSAGE_CHILDREN, &mut ru) };
-    // macOS reports bytes, Linux kilobytes.
     let unit = if cfg!(target_os = "linux") { 1024 } else { 1 };
     FinishedRequest::new(state, exit_code, Some(ru.ru_maxrss * unit))
 }
 
-/// Polls the daemon until the job is canceled.
 async fn wait_for_cancel(paths: &Paths, job: &str) {
     loop {
         tokio::time::sleep(CONTROL_POLL).await;
@@ -364,16 +335,10 @@ async fn stop_family(pgid: i32, family: &mut crate::runtime::family::Family) {
     }
 }
 
-/// Where a detached executor writes its own errors; removed when it ends
-/// cleanly.
 pub fn error_log(paths: &Paths, job: &str) -> PathBuf {
     paths.temporary.join("executors").join(format!("{job}.log"))
 }
 
-/// Starts an executor for `job` as a detached process in its own session,
-/// so that it outlives the agent's tool call (design 7.1). The executor
-/// inherits the caller's environment, working directory and stdin. Returns
-/// its process id.
 pub fn spawn_detached(paths: &Paths, job: &str, spec: &RunSpec, cwd: &Path) -> Result<i32> {
     use std::os::unix::process::CommandExt;
     let exe = std::env::current_exe().context("locating the ats binary")?;
@@ -430,8 +395,6 @@ mod tests {
     }
 
     async fn terminal_job(paths: &Paths, id: &str) -> serde_json::Value {
-        // Acknowledging the report does not release daemon-owned members.
-        // These in-process executors also share the test harness's identity.
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 let row = job(paths, id).await;
@@ -466,7 +429,6 @@ mod tests {
         }));
         wait_for_socket(&paths).await;
 
-        // Streams are kept apart and the main exit code is reported.
         let (_, j) = submit(&paths, "x").await;
         let spec = sh("echo out; echo err >&2; exit 3");
         run(paths.clone(), j.clone(), spec, "/".into())
@@ -488,7 +450,6 @@ mod tests {
             "err\n"
         );
 
-        // Registering the group first preserves command-spawn failures.
         let (_, j) = submit(&paths, "x").await;
         let spec = RunSpec::Argv {
             argv: vec![
@@ -511,7 +472,6 @@ mod tests {
                 .contains("could not start the command")
         );
 
-        // A background child keeps the job running after the main result.
         let (_, j) = submit(&paths, "x").await;
         let spec = sh("sleep 1 >/dev/null 2>&1 & echo started");
         let task = tokio::spawn(run(paths.clone(), j.clone(), spec, "/".into()));
@@ -527,7 +487,6 @@ mod tests {
         assert!(saw_main_while_running);
         assert_eq!(terminal_job(&paths, &j).await["state"], "completed");
 
-        // Canceling the only submission stops the whole process group.
         let (s, j) = submit(&paths, "x").await;
         let marker = dir.path().join("child.pid");
         let spec = sh(&format!("sleep 30 & echo $! > {}; wait", marker.display()));
@@ -552,8 +511,6 @@ mod tests {
             "background child survived"
         );
 
-        // Cancellation works after the shell exits, both while draining
-        // inherited output pipes and while waiting on a quiet group.
         for redirect in ["", ">/dev/null 2>&1"] {
             let (s, j) = submit(&paths, "x").await;
             let marker = dir.path().join("background.pids");
@@ -600,8 +557,6 @@ mod tests {
             );
         }
 
-        // A descendant in a new session is still job work, with inherited
-        // pipes or with quiet output, before and after the main exits.
         for (parent_seconds, quiet) in [(30, false), (1, false), (1, true)] {
             let (s, j) = submit(&paths, "x").await;
             let marker = dir.path().join("escaped.pids");
@@ -684,7 +639,6 @@ mod tests {
                     tx.send(body["pgid"].as_i64().unwrap() as i32)
                         .await
                         .unwrap();
-                    // Model a daemon that has not committed the registration.
                     std::future::pending::<StatusCode>().await
                 }
             }),
@@ -709,7 +663,6 @@ mod tests {
             !marker.exists(),
             "command ran before registration was committed"
         );
-        // Dropping this task closes the same descriptors as executor exit.
         task.abort();
         assert!(task.await.unwrap_err().is_cancelled());
         tokio::time::timeout(Duration::from_secs(5), async {

@@ -1,8 +1,4 @@
-//! The pressure response (design 10.2), run after every sample: while
-//! pressure is up the scheduler admits nothing, and the processes of
-//! running jobs are on background QoS; 30 seconds after it subsides both
-//! are undone. ats never freezes, pauses or terminates a job, and never
-//! touches processes it does not manage.
+//! Applies memory pressure policy to managed jobs.
 
 use anyhow::Result;
 use std::collections::HashSet;
@@ -42,9 +38,7 @@ impl Qos for SystemQos {
 #[derive(Default)]
 pub struct Response {
     tracker: Tracker,
-    /// Processes put on background QoS, as (pid, start time).
     background: HashSet<(i32, String)>,
-    /// Identities already restored in this pressure episode. Rebuilt after restart.
     settled: HashSet<(i32, String)>,
 }
 
@@ -95,7 +89,6 @@ impl Response {
         if !qos.supported() {
             return Ok(());
         }
-        // Associate legacy intents when the committed registry still identifies their job.
         for obligation in store.background_obligations()? {
             if obligation.job.is_none()
                 && let Some((job, _)) = members
@@ -112,8 +105,6 @@ impl Response {
         let jobs = store.background_jobs()?;
         let mut changed_jobs = HashSet::new();
         if !pressured {
-            // Children may inherit policy before their first observation, including the
-            // observation where pressure ends. Persist their restoration before acting.
             for job in &jobs {
                 for identity in members.get(job).into_iter().flatten() {
                     if !self
@@ -173,7 +164,6 @@ impl Response {
                 .filter_map(|o| o.job)
                 .collect();
             for job in jobs {
-                // A later unchanged observation closes the fork-before-restoration gap.
                 if !changed_jobs.contains(&job)
                     && !pending.contains(&job)
                     && members
@@ -624,8 +614,6 @@ mod inherited_tests {
             parent,
             child: None,
         };
-        // Runtime startup can reset background policy. Apply it only after
-        // Python has finished starting and is waiting for the fork signal.
         let started = Instant::now();
         while !ready.exists() {
             assert!(started.elapsed() < Duration::from_secs(5));

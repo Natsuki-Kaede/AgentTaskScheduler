@@ -32,7 +32,6 @@ def timed(action):
 
 
 def exited(pids):
-    # A zombie cannot run or hold output. Enumeration errors fail the check.
     rows = subprocess.check_output(["ps", "-axo", "pid=,stat="], text=True).splitlines()
     alive = {int(parts[0]) for row in rows if len(parts := row.split()) == 2 and not parts[1].startswith("Z")}
     return not set(pids) & alive

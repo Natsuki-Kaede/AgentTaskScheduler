@@ -8,7 +8,6 @@ pub fn path(path: &Path) -> Lock {
     Lock::Path(normalize(path))
 }
 
-/// A `--lock` value: a path when it looks like one, otherwise a name.
 pub fn parse(value: &str, cwd: &Path) -> Lock {
     if value.contains('/') || value.starts_with('.') || value.starts_with('~') {
         let expanded = match value.strip_prefix('~') {
@@ -23,9 +22,6 @@ pub fn parse(value: &str, cwd: &Path) -> Lock {
     }
 }
 
-/// The real path, resolved through the nearest existing ancestor when the
-/// path does not exist yet. macOS volumes are case-insensitive by default,
-/// so paths compare in lower case there.
 pub fn normalize(path: &Path) -> String {
     let mut full = PathBuf::new();
     for c in path.components() {
@@ -63,9 +59,6 @@ const PROJECT_MARKERS: &[&str] = &[
     "Makefile",
 ];
 
-/// The project around `dir`: the nearest directory with a project marker
-/// file, else the Git worktree root, else `dir`. Several projects in one
-/// repository each get their own root, so their builds do not share locks.
 pub fn project_root(dir: &Path) -> PathBuf {
     let marked = dir
         .ancestors()
@@ -76,8 +69,6 @@ pub fn project_root(dir: &Path) -> PathBuf {
         .to_path_buf()
 }
 
-/// Cargo members share the workspace output directory even when invoked inside
-/// a member. Explicit command-line paths take precedence over that default.
 fn cargo_target(argv: &[String], cwd: &Path) -> PathBuf {
     let value = |flag: &str| {
         argv.iter().enumerate().find_map(|(i, arg)| {
@@ -110,9 +101,6 @@ fn cargo_target(argv: &[String], cwd: &Path) -> PathBuf {
     root.join("target")
 }
 
-/// The locks a command line needs: each command's write scope from its
-/// profile, files written by redirections, and the extra `--lock` values.
-/// Commands without a profile take no lock.
 pub fn for_line(
     analysis: &Analysis,
     cwd: &Path,
@@ -152,7 +140,6 @@ pub fn for_line(
         }
     }
     locks.extend(extra.iter().map(|e| parse(e, cwd)));
-    // Drop duplicates and paths inside another locked path.
     let mut out: Vec<Lock> = Vec::new();
     for l in locks {
         let covered = out.iter().any(|o| match (o, &l) {

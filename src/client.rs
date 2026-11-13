@@ -1,5 +1,4 @@
-//! Client side of the daemon API: the unix socket first, then the
-//! request-file channel when the socket cannot be reached (design 4).
+//! Sends daemon requests over the Unix socket or request-file channel.
 
 use std::io::ErrorKind;
 use std::time::Duration;
@@ -38,21 +37,18 @@ pub struct RequestTimeout {
     source: std::io::Error,
 }
 
-/// A daemon answer: HTTP status and JSON body.
 #[derive(Debug)]
 pub struct Answer {
     pub status: u16,
     pub body: serde_json::Value,
 }
 
-/// Which transport carried a request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Transport {
     Socket,
     RequestFile,
 }
 
-/// Sends a request to the daemon.
 pub async fn call(
     paths: &Paths,
     method: &str,
@@ -62,8 +58,6 @@ pub async fn call(
     call_with_timeout(paths, method, path, body, REQUEST_TIMEOUT).await
 }
 
-/// Like [`call`], for requests the daemon may hold open (such as a bounded
-/// wait). Both transports share one budget, including response-body reads.
 pub async fn call_with_timeout(
     paths: &Paths,
     method: &str,
@@ -72,8 +66,6 @@ pub async fn call_with_timeout(
     timeout: Duration,
 ) -> Result<(Answer, Transport)> {
     let deadline = Deadline::after(Some(timeout));
-    // Fallback is safe only before a connection is established: once a
-    // request may have been delivered, replay could create another job.
     match deadline
         .run(tokio::net::UnixStream::connect(&paths.socket))
         .await
@@ -153,7 +145,6 @@ async fn via_socket(
     Ok(Answer { status, body })
 }
 
-/// Dropping a timed-out request also stops its detached HTTP driver.
 struct ConnectionTask(tokio::task::JoinHandle<Result<(), hyper::Error>>);
 
 impl Drop for ConnectionTask {
@@ -183,7 +174,6 @@ mod tests {
                 let mut buf = [0; 4096];
                 assert!(stream.read(&mut buf).await.unwrap() > 0);
                 stream.write_all(partial.as_bytes()).await.unwrap();
-                // Cancellation must close the HTTP connection as well.
                 while stream.read(&mut buf).await.unwrap() != 0 {}
             });
             let error = call_with_timeout(

@@ -1,5 +1,4 @@
-//! Table-driven tests over the command examples in the design (6.3, 8.1,
-//! 10.7) and the shapes agents commonly send.
+//! Tests command recognition and shell structure.
 
 use super::*;
 use crate::profile::Profiles;
@@ -36,7 +35,6 @@ fn directory_changes_follow_shell_scopes() {
         );
     }
 
-    // Every npm lifecycle script starts at the package root in its own shell.
     std::fs::create_dir(dir.path().join("src")).unwrap();
     std::fs::write(
         dir.path().join("package.json"),
@@ -54,8 +52,6 @@ fn directory_changes_follow_shell_scopes() {
     assert_eq!(makes, [Path::new("/tmp"), dir.path(), dir.path(), &cwd]);
 }
 
-/// A compact rendering of the structure: tools in order, with `seq`, `par`
-/// and `bg` showing how they overlap.
 fn render(a: &Analysis) -> String {
     fn node(a: &Analysis, n: &Node) -> String {
         match n {
@@ -91,7 +87,6 @@ struct Case {
     src: &'static str,
     structure: &'static str,
     light: bool,
-    /// Profile of the last segment, or "-" for none.
     profile: &'static str,
 }
 
@@ -120,14 +115,12 @@ fn project() -> tempfile::TempDir {
     )
     .unwrap();
     std::fs::write(dir.path().join("small.txt"), "hello\n").unwrap();
-    // A sparse file larger than the light read limit.
     let big = std::fs::File::create(dir.path().join("big.bin")).unwrap();
     big.set_len(64 << 20).unwrap();
     dir
 }
 
 const CASES: &[Case] = &[
-    // Light commands pass through (6.3); writes and large reads do not.
     case("ls -la", "ls", true, "ls"),
     case(
         "pwd; echo hi > /dev/null 2>&1",
@@ -163,7 +156,6 @@ const CASES: &[Case] = &[
         "read-file",
     ),
     case("git status --short", "git", false, "git-read"),
-    // Wrappers are removed (8.1 ①).
     case(
         "env RUST_LOG=debug cargo test -p core",
         "cargo",
@@ -192,7 +184,6 @@ const CASES: &[Case] = &[
     case("time nice -n 10 make all", "make", false, "make"),
     case("outfilter -q git status", "git", false, "git-read"),
     case("command -v cargo", "command", true, "command-lookup"),
-    // Structure (8.1 ②): sequences, pipelines, background jobs.
     case(
         "make -j8 2>&1 | tee build.log",
         "par(make,tee)",
@@ -223,7 +214,6 @@ const CASES: &[Case] = &[
         false,
         "mlx-server",
     ),
-    // Package scripts are expanded; scripts and make targets are not (8.1 ③).
     case(
         "cd app && npm run build",
         "seq(cd,seq(rm,seq(tsc,vite)))",
@@ -240,14 +230,12 @@ const CASES: &[Case] = &[
     case("npm run build", "npm", false, "-"),
     case("./build.sh", "build.sh", false, "-"),
     case("make release", "make", false, "make"),
-    // Commit messages through a here-document.
     case(
         "git commit -m \"$(cat <<'EOF'\nfix: thing\nEOF\n)\"",
         "seq(cat,git)",
         false,
         "git-write",
     ),
-    // Unclear structure is handled conservatively.
     case("for f in *.rs; do rustfmt $f; done", "unclear", false, "-"),
     case("$EDITOR notes.md", "$", false, "-"),
     case("eval \"$CMD\"", "eval", false, "-"),
@@ -313,7 +301,6 @@ fn argv_entry_and_history_keys() {
         (s.tool.as_deref(), s.subcommand.as_deref()),
         (Some("git"), Some("log"))
     );
-    // Arguments are not re-parsed as shell: `>` here is just a word.
     let argv: Vec<String> = ["echo", ">", "x"].map(String::from).into();
     assert!(r.argv(&argv, dir.path()).light);
 }

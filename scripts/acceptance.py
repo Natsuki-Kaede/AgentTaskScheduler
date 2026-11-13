@@ -97,12 +97,10 @@ class Home:
                 if json.loads(request.read_text())["path"] == path:
                     return True
             except FileNotFoundError:
-                # The old client can withdraw another request while it times out.
                 continue
         return False
 
     def close(self):
-        # Cancel through the owning executor before shutting down its daemon.
         for created, child in self.executors:
             if child.poll() is None:
                 with contextlib.suppress(OSError, http.client.HTTPException):

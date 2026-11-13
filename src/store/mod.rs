@@ -1,5 +1,4 @@
-//! The daemon's SQLite store (design 11). Only the daemon opens it; writes
-//! are committed before the daemon answers (design 7.1).
+//! Owns the daemon's SQLite database.
 
 use crate::domain::resource::Lock;
 use std::path::Path;
@@ -25,7 +24,6 @@ const BACKGROUND_SCHEMA: &str = "CREATE TABLE background_processes (
     PRIMARY KEY (pid, start)
 );";
 
-/// How long ended jobs, their records and logs are kept (design 11).
 pub const KEEP: std::time::Duration = std::time::Duration::from_secs(90 * 24 * 3600);
 
 use crate::timing::now;
@@ -119,7 +117,6 @@ impl Store {
             0 => {
                 tx.execute_batch(SCHEMA)?;
             }
-            // Version 1 had no detach flag apart from quiet.
             1 => {
                 tx.execute_batch(
                     "ALTER TABLE submissions ADD COLUMN detached INTEGER NOT NULL DEFAULT 0;",
@@ -141,8 +138,6 @@ impl Store {
         Ok(Self { conn })
     }
 
-    /// Registers a submission with a new queued job, its locks and its
-    /// dependencies, in one transaction.
     pub fn create_submission(&mut self, new: &NewSubmission) -> Result<Created> {
         let tx = self.conn.transaction()?;
         let job = crate::ids::new("j");
@@ -197,7 +192,6 @@ impl Store {
         Ok(Created { submission, job })
     }
 
-    /// Lists jobs, newest first, optionally filtered by state.
     pub fn list_jobs(&self, states: &[String], limit: u32) -> Result<Vec<JobRecord>> {
         let mut sql = format!("SELECT {JOB_COLUMNS} FROM jobs j");
         if !states.is_empty() {
@@ -224,7 +218,6 @@ impl Store {
             .optional()?)
     }
 
-    /// One submission with its job's state.
     pub fn submission(&self, id: &str) -> Result<Option<SubmissionRecord>> {
         Ok(self
             .conn
@@ -264,8 +257,6 @@ impl Store {
         Ok(())
     }
 
-    /// Keeps each job's measured peak private memory, and raises the
-    /// reservation of a job holding a lease to it (design 9).
     pub fn record_peaks(&mut self, peaks: &[(String, u64)]) -> Result<()> {
         let tx = self.conn.transaction()?;
         for (job, peak) in peaks {
@@ -283,9 +274,6 @@ impl Store {
         Ok(())
     }
 
-    /// Lowers the reservation of a job that started before `before` (RFC
-    /// 3339) to its measured peak × 1.3 when that is less (design 9), so a
-    /// prediction that was too high stops holding memory back.
     pub fn settle_reservations(&mut self, before: &str) -> Result<usize> {
         Ok(self.conn.execute(
             "UPDATE jobs SET reserved_private = CAST(peak_private * 1.3 AS INTEGER)
@@ -295,7 +283,6 @@ impl Store {
         )?)
     }
 
-    /// Jobs that have not ended, with what recovery needs.
     pub fn active_jobs(&self) -> Result<Vec<ActiveJob>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT {RECOVERY_COLUMNS} FROM jobs WHERE state NOT IN ('completed', 'start_failed', 'canceled', 'ended_unknown')"
@@ -332,9 +319,6 @@ impl Store {
         Ok(job)
     }
 
-    /// Cancels a submission. Returns the job id. A job left with no
-    /// uncanceled submission ends here while it waits; once running, its
-    /// executor stops it.
     pub fn cancel_submission(&mut self, id: &str) -> Result<String> {
         let tx = self.conn.transaction()?;
         let (job, state): (String, JobState) = tx.query_row(
@@ -372,8 +356,6 @@ impl Store {
         self.update_submission(id, "detached = 1")
     }
 
-    /// Running submissions the agent did not detach, or ended ones not yet
-    /// reported.
     fn reminders(conn: &Connection, session: &str, ended: bool) -> Result<Vec<Reminder>> {
         let (open, state) = if ended {
             ("s.quiet = 0", "")
@@ -398,14 +380,10 @@ impl Store {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
-    /// A session's submissions that have not ended and are not detached.
     pub fn running_reminders(&self, session: &str) -> Result<Vec<Reminder>> {
         Self::reminders(&self.conn, session, false)
     }
 
-    /// Deletes jobs that ended before `before` (RFC 3339) with their
-    /// submissions and records, keeping predecessors of jobs that have not
-    /// ended (design 11). Returns the log directories of the deleted jobs.
     pub fn prune(&mut self, before: &str) -> Result<Vec<(String, Option<String>)>> {
         let terminal = sched::in_list(TERMINAL);
         let tx = self.conn.transaction()?;
@@ -435,8 +413,6 @@ impl Store {
         Ok(old)
     }
 
-    /// A session's ended submissions that are not quiet; they are quiet
-    /// afterwards, so each is reported once.
     pub fn take_ended_reminders(&mut self, session: &str) -> Result<Vec<Reminder>> {
         let tx = self.conn.transaction()?;
         let ended = Self::reminders(&tx, session, true)?;
@@ -450,8 +426,6 @@ impl Store {
         Ok(ended)
     }
 
-    /// True when every submission of the job is canceled, so the job
-    /// should stop.
     pub fn cancel_requested(&self, job: &str) -> Result<bool> {
         let open: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM submissions WHERE job_id = ?1 AND canceled = 0",
@@ -568,7 +542,6 @@ mod tests {
             store.take_ended_reminders("s").unwrap().is_empty(),
             "reported once"
         );
-        // A detached submission does not hold Stop, but its end is reported.
         store.set_executor(&detached.job, 1, "t").unwrap();
         store.admit(&detached.job, 0, 1).unwrap();
         store

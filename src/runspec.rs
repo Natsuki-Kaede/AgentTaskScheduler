@@ -1,18 +1,15 @@
-//! What to run: the two entry forms of `ats run` (design 5.2).
+//! What to run: the two entry forms of `ats run`.
 
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "entry", rename_all = "lowercase")]
 pub enum RunSpec {
-    /// `ats run -- program args...`: executed directly, without a shell.
     Argv { argv: Vec<String> },
-    /// `ats run --sh 'source'`: executed by the submitter's shell.
     Sh { source: String, shell: String },
 }
 
 impl RunSpec {
-    /// The command for `std::process::Command`.
     pub fn command(&self) -> std::process::Command {
         match self {
             RunSpec::Argv { argv } => {
@@ -28,7 +25,6 @@ impl RunSpec {
         }
     }
 
-    /// The submitter's shell, from `$SHELL`, or `/bin/sh`.
     pub fn default_shell() -> String {
         std::env::var("SHELL")
             .ok()

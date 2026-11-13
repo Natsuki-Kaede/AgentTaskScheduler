@@ -14,7 +14,6 @@ pub struct Job {
     pub main_exit_code: Option<i64>,
     pub log_path: Option<String>,
     pub executor_pid: Option<i64>,
-    /// Peak private memory measured so far, in bytes.
     pub peak_private: Option<i64>,
     pub submissions: i64,
     pub created_at: String,
@@ -54,10 +53,7 @@ pub struct Submission {
     pub main_exit_code: Option<i64>,
     pub log_path: Option<String>,
     pub canceled: bool,
-    /// `ats detach`: the `Stop` reminder does not hold the agent for it.
     pub detached: bool,
-    /// Its end is not reported: the result already reached the agent, or
-    /// it was reported once (design 6.2).
     pub quiet: bool,
 }
 
@@ -99,7 +95,6 @@ impl From<crate::domain::job::Reminder> for Reminder {
     }
 }
 
-/// Body of `POST /v1/jobs`.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SubmitRequest {
@@ -109,19 +104,14 @@ pub struct SubmitRequest {
     pub source: Option<String>,
     pub cwd: String,
     pub session: Option<String>,
-    /// The submitting CLI, which starts the executor.
     pub launcher_pid: Option<i64>,
     pub launcher_start: Option<String>,
-    /// `--after`: job or submission ids that must succeed first.
     #[serde(default)]
     pub after: Vec<String>,
-    /// `--now`: run at once unless a dependency or lock conflicts.
     #[serde(default)]
     pub now: bool,
-    /// `--lock`: extra paths or named resources.
     #[serde(default)]
     pub lock: Vec<String>,
-    /// `--hint mem=6G`.
     pub hint: Option<String>,
 }
 
@@ -151,8 +141,6 @@ pub struct MainResultRequest {
 pub struct FinishedRequest {
     pub state: String,
     pub exit_code: Option<i64>,
-    /// The largest resident size of any process the command waited for,
-    /// for commands too short to sample (design 8.3).
     pub max_rss: Option<i64>,
 }
 
@@ -168,10 +156,7 @@ impl FinishedRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WaitRequest {
-    /// Seconds to wait; absent waits without limit.
     pub wait_seconds: Option<f64>,
-    /// "main": until the main execution process has a result or the job
-    /// ends. "terminal": until the job ends.
     pub until: String,
 }
 

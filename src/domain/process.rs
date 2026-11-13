@@ -41,8 +41,6 @@ impl Process {
     }
 }
 
-/// An enumeration may succeed while individual processes cannot be read.
-/// Such identities remain owned until a later observation resolves them.
 #[derive(Debug, Clone, Default)]
 pub struct ProcessTable {
     pub processes: Vec<Process>,

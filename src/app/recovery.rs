@@ -1,8 +1,4 @@
-//! Watches executors and settles jobs whose executor is gone (design 7.1).
-//! A command runs only after its lease is committed, so a job that never
-//! got a lease is known not to have run; after the lease, a job keeps it
-//! while its process group lives, and its exit code is unknown unless the
-//! executor reported the main result.
+//! Recovers jobs using confirmed process ownership after executor loss.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -16,18 +12,15 @@ use crate::domain::process::{ProcessIdentity, ProcessSnapshot};
 use crate::procinfo;
 use crate::timing;
 
-/// Process checks, replaceable in tests.
 pub trait Processes {
     fn alive(&self, pid: i64, start: &str) -> bool;
     fn members(&self, job: &ActiveJob) -> &[ProcessIdentity];
     fn ready(&self, _job: &ActiveJob) -> bool {
         true
     }
-    /// Asks the job's process group to end, or kills it when `force`.
     fn terminate(&self, job: &ActiveJob, force: bool);
 }
 
-/// One recovery pass uses a fixed committed observation, even if monitoring fails meanwhile.
 pub struct System {
     observation: Option<ProcessSnapshot>,
 }
@@ -53,7 +46,6 @@ impl Processes for System {
     }
 
     fn alive(&self, pid: i64, start: &str) -> bool {
-        // A process may have registered since the last shared observation.
         procinfo::probe(pid as i32).map_or(true, |p| p.is_some_and(|p| p.start == start))
     }
 
@@ -75,7 +67,6 @@ impl Processes for System {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Action {
     AwaitTakeover,
-    /// Canceled while its executor is gone: the daemon stops it.
     Terminate,
     Finish(JobState, Option<i64>),
 }
@@ -85,7 +76,6 @@ fn alive(p: &Option<(i64, String)>, procs: &impl Processes) -> bool {
         .is_some_and(|(pid, start)| procs.alive(*pid, start))
 }
 
-/// Decides what to do with one job that has not ended.
 pub fn check(job: &ActiveJob, procs: &impl Processes) -> Option<Action> {
     if !procs.ready(job) {
         return None;
@@ -106,8 +96,6 @@ pub fn check(job: &ActiveJob, procs: &impl Processes) -> Option<Action> {
         return None;
     }
     if job.state.pre_lease() {
-        // Without a lease the command never ran. Wait for an executor while
-        // the process that starts it is alive.
         let starter_gone =
             job.executor.is_some() || (job.launcher.is_some() && !alive(&job.launcher, procs));
         return starter_gone.then_some(Action::Finish(JobState::StartFailed, None));
@@ -130,8 +118,6 @@ pub fn check(job: &ActiveJob, procs: &impl Processes) -> Option<Action> {
     })
 }
 
-/// Jobs whose executors are alive now; after a restart they are given time
-/// to reconnect before new leases are granted.
 pub fn live_executors(state: &App, procs: &impl Processes) -> Result<Vec<String>> {
     Ok(state
         .store()
@@ -142,11 +128,8 @@ pub fn live_executors(state: &App, procs: &impl Processes) -> Result<Vec<String>
         .collect())
 }
 
-/// How long processes get to end after SIGTERM before SIGKILL.
 const TERM_GRACE: Duration = Duration::from_secs(5);
 
-/// Applies [`check`] to every job that has not ended. `terminating` holds
-/// when each canceled job was asked to end.
 pub fn sweep(
     state: &App,
     procs: &impl Processes,
@@ -190,7 +173,6 @@ pub fn sweep(
                 tracing::warn!(job = %job.id, ?action, "executor gone");
                 changed = true;
             }
-            // Job facts or committed membership changed after the recovery read.
             Err(e) if e.downcast_ref::<Conflict>().is_some() => {}
             Err(e) => return Err(e),
         }
@@ -319,8 +301,6 @@ mod tests {
 
     #[test]
     fn a_lost_start_confirmation_is_never_reported_as_not_started() {
-        // Leased, but the executor died before reporting the start: the
-        // command may have run.
         let j = job("admitted");
         assert_eq!(
             check(&j, &fake(&[], &[])),

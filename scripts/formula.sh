@@ -1,7 +1,6 @@
 #!/bin/sh
-# Writes dist/SHA256SUMS and the Homebrew formula dist/ats.rb from the
-# release archives in dist/. The formula needs the archives of all four
-# targets.
+# Generates release checksums and the Homebrew formula.
+
 set -eu
 cd "$(dirname "$0")/.."
 

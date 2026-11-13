@@ -1,9 +1,4 @@
-//! Agent hooks (design 6.2). Agents send heavy commands to `ats run`
-//! themselves, as their instructions tell them; the hooks only remind them
-//! of their session's submissions. `Stop` holds the agent once while
-//! submissions still run, and `UserPromptSubmit` reports the ones that
-//! ended. When the daemon cannot be reached they let everything through
-//! and change nothing.
+//! Delivers session reminders through agent hooks.
 
 use std::io::Read;
 use std::time::Duration;
@@ -15,10 +10,7 @@ use crate::client;
 use crate::paths::Paths;
 use crate::protocol::Reminder;
 
-/// How long a reminder waits for the request-file channel when the socket
-/// cannot be reached, so a stopped daemon delays the agent only briefly.
 const REMINDER_TIMEOUT: Duration = Duration::from_secs(1);
-/// Commands in reminders are cut to this many characters.
 const COMMAND_CHARS: usize = 120;
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,22 +22,17 @@ pub enum Agent {
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Event {
-    /// Answers nothing. Earlier versions of `ats install` registered it, and
-    /// an agent blocks the command when its hook fails.
     PreToolUse,
     Stop,
     UserPromptSubmit,
 }
 
-/// What the hook tells the agent.
 #[derive(Debug, PartialEq)]
 pub enum Answer {
     Nothing,
-    /// Print this JSON.
     Json(Value),
 }
 
-/// Reads the hook input from stdin and answers it.
 pub async fn run(paths: &Paths, event: Event) -> Result<Answer> {
     let mut text = String::new();
     std::io::stdin().read_to_string(&mut text)?;
@@ -57,8 +44,6 @@ pub async fn run(paths: &Paths, event: Event) -> Result<Answer> {
     })
 }
 
-/// The daemon's reminders for this session, or `None` when there is no
-/// session or the daemon cannot answer.
 async fn reminders(
     paths: &Paths,
     method: &str,
@@ -95,8 +80,6 @@ fn line(r: &Reminder) -> String {
     )
 }
 
-/// Stops the agent once while its session still has submissions running
-/// (design 6.2); a second stop goes through.
 async fn stop(paths: &Paths, input: &Value) -> Answer {
     if input["stop_hook_active"] == true {
         return Answer::Nothing;
@@ -117,8 +100,6 @@ async fn stop(paths: &Paths, input: &Value) -> Answer {
     }))
 }
 
-/// Tells the agent which of its submissions ended since it last heard, each
-/// once (design 6.2).
 async fn user_prompt_submit(paths: &Paths, input: &Value) -> Answer {
     let Some(ended) = reminders(paths, "POST", input, "ended")
         .await
@@ -138,8 +119,6 @@ async fn user_prompt_submit(paths: &Paths, input: &Value) -> Answer {
     }))
 }
 
-/// POSIX shell quoting: plain words as they are, anything else in single
-/// quotes.
 pub fn quote(s: &str) -> String {
     let plain = !s.is_empty()
         && s.chars()

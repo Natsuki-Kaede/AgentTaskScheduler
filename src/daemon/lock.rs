@@ -1,4 +1,4 @@
-//! Single-instance lock (design 4): an exclusive `flock` on the lock file,
+//! Single-instance lock: an exclusive `flock` on the lock file,
 //! held for the daemon's lifetime and released by the OS when it exits.
 
 use std::fs::{File, OpenOptions};
@@ -47,8 +47,6 @@ mod tests {
         let err = super::acquire(&path).err().expect("second lock must fail");
         assert!(err.to_string().contains(&std::process::id().to_string()));
         drop(first);
-        // Other tests fork children concurrently; between fork and exec a
-        // child briefly holds a copy of the descriptor, and with it the lock.
         let start = std::time::Instant::now();
         while let Err(e) = super::acquire(&path) {
             assert!(start.elapsed().as_secs() < 2, "{e:#}");

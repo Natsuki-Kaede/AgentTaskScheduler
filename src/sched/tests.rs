@@ -36,7 +36,6 @@ fn held(id: &str, reserved: u64, resident: u64) -> Held {
 }
 
 fn round(capacity: &Capacity, held: &[Held], waiting: &[Waiting]) -> Round<'static> {
-    // Leaked so tests can build rounds inline; tiny and test-only.
     Round {
         capacity: Box::leak(Box::new(capacity.clone())),
         held: Box::leak(held.to_vec().into_boxed_slice()),
@@ -67,9 +66,8 @@ fn path(p: &str) -> Lock {
 
 #[test]
 fn headroom_follows_the_formula() {
-    // H = C − U − Σ max(0, R − M)
     let a = held("a", 4 * G, G);
-    let over = held("b", G, 2 * G); // using more than reserved: nothing pending
+    let over = held("b", G, 2 * G);
     assert_eq!(
         headroom(&cap(6 * G), &[a, over]),
         (16 - 6 - 3) as i64 * G as i64
@@ -111,7 +109,6 @@ fn execution_scopes_limit_idle_jobs_and_share_pending_reservations() {
     a.scopes = Some(vec![scope("parent", 4 * G, G), scope("a", 3 * G, 0)]);
     let mut b = job("b", 9.0, 2 * G);
     b.scopes = Some(vec![scope("parent", 4 * G, G), scope("b", 3 * G, 0)]);
-    // Sibling leaf groups still contend for their common parent.
     assert_eq!(admitted(&run(&cap(0), &[], &[a.clone(), b])), ["a"]);
     let mut running = held("running", 2 * G, G);
     running.scopes = vec![("parent".into(), G)];
@@ -122,7 +119,6 @@ fn execution_scopes_limit_idle_jobs_and_share_pending_reservations() {
         admitted(&run(&cap(0), &[running.clone()], &[a.clone()])),
         ["a"]
     );
-    // Unrelated execution groups must not consume each other's reservations.
     running.scopes = vec![("elsewhere".into(), G)];
     a.reserved = 3 * G;
     assert_eq!(admitted(&run(&cap(0), &[running], &[a])), ["a"]);
@@ -130,7 +126,6 @@ fn execution_scopes_limit_idle_jobs_and_share_pending_reservations() {
 
 #[test]
 fn admits_by_memory_in_order() {
-    // 8G free: two 3G jobs fit, and the third waits for memory.
     let out = run(
         &cap(8 * G),
         &[],
@@ -150,7 +145,6 @@ fn admits_by_memory_in_order() {
             }
         }
     );
-    // A managed job is running, so memory it frees can let this one in.
     let out = run(&cap(14 * G), &[held("h", G, G)], &[job("a", 30.0, 3 * G)]);
     assert_eq!(
         verdict(&out, "a"),
@@ -165,12 +159,10 @@ fn admits_by_memory_in_order() {
 
 #[test]
 fn the_first_job_starts_when_nothing_managed_runs() {
-    // Other programs leave 2G; the 4G job starts anyway, the next waits.
     let waiting = [job("a", 30.0, 4 * G), job("b", 20.0, G)];
     let out = run(&cap(14 * G), &[], &waiting);
     assert_eq!(admitted(&out), ["a"]);
     assert!(matches!(verdict(&out, "b"), Verdict::Wait { .. }));
-    // A managed job holding memory can free it: wait for that.
     let out = run(&cap(14 * G), &[held("h", G, G)], &waiting[..1]);
     assert!(matches!(
         verdict(&out, "a"),
@@ -178,7 +170,6 @@ fn the_first_job_starts_when_nothing_managed_runs() {
             reason: Reason::Memory { .. }
         }
     ));
-    // Pressure and the machine's size still hold.
     let mut r = round(&cap(14 * G), &[], &waiting[..1]);
     r.pressure = true;
     assert_eq!(
@@ -196,7 +187,6 @@ fn the_first_job_starts_when_nothing_managed_runs() {
 
 #[test]
 fn many_small_jobs_run_together() {
-    // CPU is not an admission constraint: ten 512M jobs all start.
     let waiting: Vec<Waiting> = (0..10)
         .map(|i| job(&format!("j{i}"), 10.0 - i as f64, G / 2))
         .collect();
@@ -328,13 +318,12 @@ fn awaited_jobs_go_first_then_oldest() {
 
 #[test]
 fn backfills_only_what_does_not_delay_the_head() {
-    // 6G free (16 − 10). The head needs 8G; a held job frees 4G in 60s.
     let mut h = held("h", 4 * G, 4 * G);
     h.ends_in = Some(60.0);
     let head = job("head", 50.0, 8 * G);
     let mut quick = job("quick", 40.0, G);
     quick.seconds = Some(30.0);
-    let slow = job("slow", 30.0, G); // duration unknown
+    let slow = job("slow", 30.0, G);
     let mut long = job("long", 20.0, G);
     long.seconds = Some(120.0);
     let out = run(&cap(10 * G), &[h], &[head, quick, slow, long]);

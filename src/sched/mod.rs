@@ -1,32 +1,22 @@
-//! Admission and ordering (design 10), as a pure function of one
-//! scheduling round's inputs, so every rule can be tested with simulated
-//! resources.
+//! Decides admission and queue order from scheduling inputs.
 
 pub mod pressure;
 
 use crate::domain::resource::{Lock, MemoryScope};
 
-/// Memory the machine offers this round.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Capacity {
-    /// C: the memory budget.
     pub memory: u64,
-    /// U: memory in use now, as the system counts it.
     pub used: u64,
 }
 
-/// A job holding a lease: admitted, running or awaiting takeover.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Held {
     pub id: String,
-    /// Rᵢ: its reservation.
     pub reserved: u64,
-    /// Mᵢ: the part of it resident now, already counted in U.
     pub resident: u64,
     pub locks: Vec<Lock>,
-    /// Predicted seconds until it ends, when known.
     pub ends_in: Option<f64>,
-    /// Scope id and the job's measured resident bytes in that scope.
     pub scopes: Vec<(String, u64)>,
 }
 
@@ -40,21 +30,14 @@ pub enum Dep {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Waiting {
     pub id: String,
-    /// Seconds since submission.
     pub age: f64,
     pub reserved: u64,
-    /// Predicted run time, when known.
     pub seconds: Option<f64>,
     pub locks: Vec<Lock>,
-    /// (predecessor job, its state) from `--after`.
     pub deps: Vec<(String, Dep)>,
-    /// `--now`: skips the queue and memory admission, not conflicts.
     pub now: bool,
-    /// Its executor is registered and can take a lease.
     pub ready: bool,
-    /// Someone is waiting for it (a bounded wait or `ats wait`).
     pub awaited: bool,
-    /// None means the executor's resource domain could not be read safely.
     pub scopes: Option<Vec<MemoryScope>>,
 }
 
@@ -62,23 +45,18 @@ pub struct Round<'a> {
     pub capacity: &'a Capacity,
     pub held: &'a [Held],
     pub waiting: &'a [Waiting],
-    /// Memory pressure is up: nothing new is admitted (design 10.2).
     pub pressure: bool,
-    /// False while executors reconnect after a restart (design 7.1).
     pub admitting: bool,
 }
 
 use crate::domain::resource::{Reason, Verdict};
 
-/// Waiting jobs in the order they are considered: those someone is
-/// waiting for first, then oldest first (design 10.3).
 pub fn order(waiting: &[Waiting]) -> Vec<&Waiting> {
     let mut v: Vec<&Waiting> = waiting.iter().collect();
     v.sort_by(|a, b| b.awaited.cmp(&a.awaited).then(b.age.total_cmp(&a.age)));
     v
 }
 
-/// H in design 10.1.
 pub fn headroom(capacity: &Capacity, held: &[Held]) -> i64 {
     let pending: u64 = held
         .iter()
@@ -87,8 +65,6 @@ pub fn headroom(capacity: &Capacity, held: &[Held]) -> i64 {
     capacity.memory as i64 - capacity.used as i64 - pending as i64
 }
 
-/// When the head of the queue could start: the time until enough held
-/// jobs end to free `deficit` bytes, if their end times are known.
 fn head_eta(held: &[Held], admitted: &[(f64, u64)], deficit: i64) -> Option<f64> {
     let mut ends: Vec<(f64, u64)> = held
         .iter()
@@ -111,7 +87,6 @@ fn head_eta(held: &[Held], admitted: &[(f64, u64)], deficit: i64) -> Option<f64>
     None
 }
 
-/// Decides every waiting job, in queue order.
 pub fn decide(r: &Round) -> Vec<(String, Verdict)> {
     let c = r.capacity;
     let mut free = headroom(c, r.held);
@@ -122,8 +97,6 @@ pub fn decide(r: &Round) -> Vec<(String, Verdict)> {
         .collect();
     let mut admitted_ends: Vec<(f64, u64)> = Vec::new();
     let mut admitted_scopes: Vec<(Vec<String>, u64)> = Vec::new();
-    // The first job held back by memory, when it could start, and its
-    // locks; later jobs must not delay it.
     let mut head: Option<(String, Option<f64>, Vec<Lock>)> = None;
 
     let mut out = Vec::new();
@@ -184,8 +157,6 @@ pub fn decide(r: &Round) -> Vec<(String, Verdict)> {
                     });
                 }
             }
-            // With no managed job holding memory, waiting cannot free any
-            // that ats controls: the first job always starts (design 10.1).
             let scope_free = scopes
                 .iter()
                 .map(|scope| {
@@ -210,7 +181,6 @@ pub fn decide(r: &Round) -> Vec<(String, Verdict)> {
                 .unwrap_or(i64::MAX);
             let available = free.min(scope_free);
             let idle = r.held.is_empty() && admitted_ends.is_empty();
-            // The idle escape hatch cannot override a kernel-enforced cgroup budget.
             if w.reserved as i64 <= available || (idle && w.reserved as i64 <= scope_free) {
                 return Verdict::Admit;
             }

@@ -13,13 +13,10 @@ use crate::paths::{Paths, create_private_dir};
 use crate::profile::Profiles;
 use crate::store::Store;
 
-/// How long leases wait after a restart for running executors to reconnect.
-/// They poll every half second, so this covers slow starts.
 const RECONNECT_GRACE: Duration = Duration::from_secs(10);
 const SWEEP_EVERY: Duration = Duration::from_secs(1);
 const PRUNE_EVERY: Duration = Duration::from_secs(3600);
 
-/// Runs the daemon until `shutdown` completes.
 pub async fn run(paths: Paths, shutdown: impl Future<Output = ()> + Send + 'static) -> Result<()> {
     create_private_dir(&paths.home)?;
     create_private_dir(&paths.logs)?;
@@ -41,8 +38,6 @@ pub async fn run(paths: Paths, shutdown: impl Future<Output = ()> + Send + 'stat
     state.expect_reconnects(reconnecting.into_iter().collect(), RECONNECT_GRACE);
     let router = api::router(state.clone());
 
-    // Holding the lock means no other daemon owns the socket file, so a
-    // leftover one is stale.
     let _ = std::fs::remove_file(&paths.socket);
     let listener = tokio::net::UnixListener::bind(&paths.socket)
         .with_context(|| format!("binding {}", paths.socket.display()))?;
@@ -100,7 +95,6 @@ pub async fn run(paths: Paths, shutdown: impl Future<Output = ()> + Send + 'stat
     served.context("serving the API")
 }
 
-/// Resolves when the process receives SIGINT or SIGTERM.
 pub async fn shutdown_signal() {
     use tokio::signal::unix::{SignalKind, signal};
     let mut term = signal(SignalKind::terminate()).expect("installing SIGTERM handler");
@@ -157,14 +151,12 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(created.status, 201);
 
-        // A second daemon on the same home must refuse to start.
         let second = run(paths.clone(), async {}).await.unwrap_err();
         assert!(
             second.to_string().contains("another ats daemon is running"),
             "{second:#}"
         );
 
-        // With the socket gone, the client falls back to request files.
         std::fs::remove_file(&paths.socket).unwrap();
         let (jobs, transport) = client::call(&paths, "GET", "/v1/jobs", None).await.unwrap();
         assert_eq!(transport, Transport::RequestFile);

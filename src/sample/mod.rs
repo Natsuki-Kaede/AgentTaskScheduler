@@ -1,7 +1,4 @@
-//! Measurement (design 9): system memory and swap-out rate every second,
-//! and each job's private anonymous memory. Per-process readings cost up to
-//! a few milliseconds (a region walk on macOS) and run every five seconds
-//! and for new processes.
+//! Samples system memory pressure and per-job memory use.
 
 #[cfg(any(target_os = "linux", test))]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -35,21 +32,16 @@ pub fn process_memory(pid: i32) -> Option<Memory> {
 
 pub use crate::domain::measurement::{JobUsage, Memory, Snapshot, System};
 
-/// Cores this process may use: the CPU affinity mask and, on Linux, the
-/// cgroup CPU quota count.
 fn cores() -> u32 {
     std::thread::available_parallelism().map_or(1, |n| n.get() as u32)
 }
 
-/// Per-process memory is read this often; new processes are read at once.
 const MEMORY_EVERY: u64 = 5;
 
 #[derive(Default)]
 pub struct Sampler {
     memory: HashMap<ProcessIdentity, Memory>,
-    /// The peak of each job so far.
     peaks: HashMap<String, u64>,
-    /// The previous swap-out count and when it was read.
     last: Option<(u64, Duration)>,
     ticks: u64,
 }

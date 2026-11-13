@@ -1,8 +1,4 @@
-//! Command recognition (design 6.1, 8.1): the structure of a command line,
-//! each command in it with wrappers removed and scripts expanded, its
-//! profile, and whether the whole line is light enough to skip the queue.
-//! Recognition only informs prediction and the light check; it never
-//! changes what runs.
+//! Recognizes command structure and tool profiles for scheduling.
 
 pub mod shell;
 
@@ -13,37 +9,24 @@ use serde::Serialize;
 use crate::profile::{Class, Profiles, Writes, positionals};
 use shell::{Ast, Redirect, Sep, Simple, Word};
 
-/// How the commands of a line overlap in time (design 8.1). This is an
-/// assumption for estimates; resources are held until the job's processes
-/// have all exited.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Node {
-    /// One command: an index into [`Analysis::segments`].
     Cmd { segment: usize },
-    /// One after another.
     Seq { items: Vec<Node> },
-    /// At the same time (pipeline stages, process substitutions).
     Par { items: Vec<Node> },
-    /// Started with `&`: assumed to run until the end of the line.
     Background { item: Box<Node> },
 }
 
-/// One command after wrappers are removed.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Segment {
     pub argv: Vec<String>,
-    /// The directory it runs in, following static `cd`s earlier in the line.
     pub cwd: PathBuf,
-    /// Program basename and first positional word, for history lookups
-    /// (design 8.3).
     pub tool: Option<String>,
     pub subcommand: Option<String>,
     pub profile: Option<String>,
-    /// `None` when no profile applies.
     pub class: Option<Class>,
     pub writes: Writes,
-    /// Files written by redirections.
     pub redirect_writes: Vec<String>,
     pub interactive: bool,
     pub service: bool,
@@ -51,23 +34,18 @@ pub struct Segment {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Analysis {
-    /// `None` when the line's structure could not be established.
     pub structure: Option<Node>,
     pub unclear: Option<String>,
     pub segments: Vec<Segment>,
-    /// Every command is recognized, light and writes nothing: the line can
-    /// run without queueing (design 6.1).
     pub light: bool,
     pub interactive: bool,
 }
 
-/// Programs that run the rest of their arguments as a command.
 const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh"];
 const MAX_DEPTH: usize = 8;
 
 pub struct Recognizer<'a> {
     profiles: &'a Profiles,
-    /// Extra wrapper programs from the configuration (design 8.1).
     wrappers: &'a [String],
 }
 
@@ -76,7 +54,6 @@ impl<'a> Recognizer<'a> {
         Recognizer { profiles, wrappers }
     }
 
-    /// Analyzes shell source run from `cwd`.
     pub fn shell(&self, source: &str, cwd: &Path) -> Analysis {
         let mut run = Run {
             r: self,
@@ -88,7 +65,6 @@ impl<'a> Recognizer<'a> {
         run.finish(structure)
     }
 
-    /// Analyzes a command given as an argument list.
     pub fn argv(&self, argv: &[String], cwd: &Path) -> Analysis {
         let mut run = Run {
             r: self,
@@ -206,8 +182,6 @@ impl Run<'_, '_> {
         Ok(seq(before))
     }
 
-    /// Recognizes one command, removing wrappers and expanding `sh -c` and
-    /// package scripts.
     fn command(&mut self, mut words: Vec<Word>, redirects: &[Redirect]) -> Res {
         loop {
             let Some(first) = words.first() else {
@@ -273,8 +247,6 @@ impl Run<'_, '_> {
         Ok(node)
     }
 
-    /// `sh -c 'source'`: analyzes the source. A shell running a script file
-    /// is an unknown command.
     fn shell_c(&mut self, words: &[Word], redirects: &[Redirect]) -> Res {
         let mut i = 1;
         let mut source = None;
@@ -313,9 +285,6 @@ impl Run<'_, '_> {
         result
     }
 
-    /// `npm run x`, `npm test`, `pnpm run x`, `yarn run x`, `bun run x`:
-    /// the script from the nearest package.json, with npm's pre and post
-    /// scripts (design 8.1).
     fn package_script(
         &mut self,
         argv: &[String],
@@ -400,7 +369,6 @@ impl Run<'_, '_> {
             self.r.profiles.find(&argv)
         };
         let segment = match (argv.is_empty(), profile) {
-            // Only assignments or redirections.
             (true, _) => Segment {
                 argv,
                 cwd: self.cwd.clone(),
@@ -440,8 +408,6 @@ impl Run<'_, '_> {
         }
     }
 
-    /// A light command reading a large file, or files it cannot size, is
-    /// medium (design 8.2: reading a very large file is not light).
     fn check_inputs(&mut self, segment: usize, limit: u64, words: &[Word], redirects: &[Redirect]) {
         let args = words[1..]
             .iter()
@@ -471,7 +437,6 @@ fn basename(path: &str) -> String {
         .to_string()
 }
 
-/// The command after `env`'s options and assignments, if any.
 fn skip_env(args: &[Word]) -> Option<Vec<Word>> {
     let mut i = 0;
     while let Some(w) = args.get(i) {
@@ -486,7 +451,6 @@ fn skip_env(args: &[Word]) -> Option<Vec<Word>> {
     Some(args.get(i..)?.to_vec())
 }
 
-/// The command after leading flags; `value_flags` take the next word.
 fn skip_flags(args: &[Word], value_flags: &[&str]) -> Option<Vec<Word>> {
     let mut i = 0;
     while let Some(w) = args.get(i) {
@@ -506,7 +470,6 @@ fn skip_flags(args: &[Word], value_flags: &[&str]) -> Option<Vec<Word>> {
     Some(args.get(i..)?.to_vec())
 }
 
-/// The `scripts` of the nearest package.json at or above `dir`.
 fn find_scripts(dir: &Path) -> Option<(PathBuf, serde_json::Map<String, serde_json::Value>)> {
     let file = dir
         .ancestors()

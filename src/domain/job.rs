@@ -1,5 +1,4 @@
-//! The task lifecycle and its allowed transitions. Persistence checks these
-//! rules against the current state inside the update transaction.
+//! Defines the job lifecycle and its transitions.
 
 use crate::domain::resource::{Lock, Prediction};
 use serde::{Deserialize, Serialize};
@@ -68,8 +67,6 @@ impl JobState {
                 if !self.terminal()
                     && match next {
                         Self::Completed | Self::EndedUnknown => self.held(),
-                        // A spawn failure may still await confirmation after
-                        // recovery takes over the executor's helper processes.
                         Self::StartFailed => self.pre_lease() || self.held(),
                         Self::Canceled => true,
                         _ => false,
@@ -162,34 +159,26 @@ impl std::str::FromStr for WaitUntil {
     }
 }
 
-/// Data needed to register a submission and its job.
 #[derive(Debug, Clone)]
 pub struct NewSubmission {
     pub entry: Entry,
-    /// Redacted display form of the command.
     pub command: String,
     pub cwd: String,
     pub project_root: String,
     pub session_id: Option<String>,
-    /// The process that will start the executor, as (pid, start time).
     pub launcher: Option<(i64, String)>,
     pub plan: Plan,
 }
 
-/// What admission needs to know about a new job (design 10).
 #[derive(Debug, Clone, Default)]
 pub struct Plan {
     pub profiles: Vec<String>,
     pub prediction: Prediction,
     pub locks: Vec<Lock>,
-    /// Predecessor job ids from `--after`.
     pub after: Vec<String>,
     pub run_now: bool,
-    /// Tool and subcommand of a one-command line, for history lookups.
     pub history_key: Option<String>,
-    /// Environment variables set to the leased parallelism (design 10.5).
     pub parallel_env: Vec<String>,
-    /// The line runs jobserver clients, so the executor offers a pool.
     pub jobserver: bool,
 }
 
@@ -227,7 +216,6 @@ pub struct JobRecord {
     pub main_exit_code: Option<i64>,
     pub log_path: Option<String>,
     pub executor_pid: Option<i64>,
-    /// Peak private memory measured so far, in bytes.
     pub peak_private: Option<i64>,
     pub submissions: i64,
     pub created_at: String,
@@ -245,14 +233,10 @@ pub struct SubmissionRecord {
     pub main_exit_code: Option<i64>,
     pub log_path: Option<String>,
     pub canceled: bool,
-    /// `ats detach`: the `Stop` reminder does not hold the agent for it.
     pub detached: bool,
-    /// Its end is not reported: the result already reached the agent, or
-    /// it was reported once (design 6.2).
     pub quiet: bool,
 }
 
-/// A submission a reminder names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reminder {
     pub submission: String,
@@ -262,7 +246,6 @@ pub struct Reminder {
     pub command: String,
 }
 
-/// An executor's completion claim, retained until owned processes have exited.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FinishReport {
     pub state: JobState,
@@ -270,18 +253,14 @@ pub struct FinishReport {
     pub max_rss: Option<i64>,
 }
 
-/// A job's durable facts used by conditional lifecycle updates.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActiveJob {
     pub id: String,
     pub state: JobState,
-    /// The executor process, as (pid, start time).
     pub executor: Option<(i64, String)>,
     pub pgid: Option<i64>,
-    /// The process that starts the executor, as (pid, start time).
     pub launcher: Option<(i64, String)>,
     pub main_exit_code: Option<i64>,
-    /// Every submission of the job is canceled.
     pub canceled: bool,
     pub finish: Option<FinishReport>,
 }

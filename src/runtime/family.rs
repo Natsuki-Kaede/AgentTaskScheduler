@@ -2,7 +2,6 @@ use std::collections::{BTreeMap, HashSet};
 
 use crate::domain::process::{ProcessIdentity, ProcessTable};
 
-/// Confirmed members survive changes of process group and parent.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Family {
     members: BTreeMap<i32, String>,
@@ -49,7 +48,6 @@ impl Family {
                 self.members.insert(identity.pid, identity.start);
             }
         }
-        // Retaining an unreadable identity does not confirm its current parentage.
         let mut confirmed: HashSet<i32> = table
             .processes
             .iter()
@@ -105,7 +103,6 @@ mod tests {
                 pid: 10,
                 start: "old".into(),
             }]);
-            // Reverse descendant order also exercises multi-generation discovery.
             let mut table = ProcessTable {
                 processes: vec![grandchild.clone(), child.clone()],
                 ..Default::default()

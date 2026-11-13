@@ -1,10 +1,4 @@
-//! `ats install` and `ats uninstall` (design 5.3, 6.1, 12): the
-//! instructions that tell agents which commands to send to `ats run`, the
-//! reminder hooks, and the login service that keeps the daemon running.
-//! Every change is shown as a diff and written only after confirmation,
-//! with a backup of each file first. Earlier versions moved other hooks
-//! into a chain of their own and kept them in `installed.json`; install and
-//! uninstall put them back.
+//! Manages agent instructions, reminder hooks and the daemon login service.
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
@@ -21,20 +15,14 @@ mod dsh;
 pub use dsh::DshConfig;
 mod service;
 
-/// How install and uninstall confirm their changes.
 pub enum Confirm<'a> {
-    /// Ask on the terminal.
     Ask(&'a mut dyn BufRead),
-    /// Show the changes and write nothing.
     DryRun,
-    /// Write without a question: the user agreed to the changes shown
-    /// before, as an agent shows them.
     Yes,
 }
 
 const BEGIN: &str = "<!-- ats:begin -->";
 const END: &str = "<!-- ats:end -->";
-/// The line in CLAUDE.md that imports the instructions file.
 const INCLUDE: &str = "@ats.md";
 const INSTRUCTIONS: &str = "\
 ## Agent Task Scheduler (ats)
@@ -56,13 +44,9 @@ Run other commands directly: `ls`, `cat`, `cd`, `mkdir`, `cp`, `mv`, `git status
 - Interpret 76 as an `--after` predecessor failure, 77 as rejection and 78 as an ats failure only when ats's diagnostic output confirms that cause. Completed commands return their own exit codes unchanged and may use the same numbers.
 - Run `ats why <submission>` to see why a command waits. Do not use `ats run --now` unless the user asks to run something immediately.";
 
-/// Hook events ats answers, with their `ats hook` names.
 const EVENTS: [(&str, &str); 2] = [("Stop", "stop"), ("UserPromptSubmit", "user-prompt-submit")];
-/// `ats hook` names of earlier versions, removed on install and uninstall.
 const OLD_EVENTS: [(&str, &str); 1] = [("PreToolUse", "pre-tool-use")];
 
-/// A hook an earlier `ats install` moved into its chain, as it was and
-/// where it was.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Moved {
     pub group: usize,
@@ -70,7 +54,6 @@ pub struct Moved {
     pub hook: Value,
 }
 
-/// What earlier versions of `ats install` moved, per agent.
 #[derive(Serialize, Deserialize, Default, Debug, PartialEq)]
 pub struct Record {
     #[serde(default)]
@@ -96,7 +79,6 @@ fn name(agent: Agent) -> &'static str {
     }
 }
 
-/// An agent's hook configuration and global instructions.
 fn files(home: &Path, agent: Agent) -> (PathBuf, PathBuf) {
     match agent {
         Agent::Claude => (
@@ -114,7 +96,6 @@ fn files(home: &Path, agent: Agent) -> (PathBuf, PathBuf) {
     }
 }
 
-/// Full command guidance, imported by Claude and read on demand by Codex.
 fn include_file(home: &Path, agent: Agent) -> PathBuf {
     match agent {
         Agent::Claude => home.join(".claude/ats.md"),
@@ -123,7 +104,6 @@ fn include_file(home: &Path, agent: Agent) -> PathBuf {
     }
 }
 
-/// The agents named, or else those set up on this machine.
 pub fn agents(home: &Path, named: &[Agent], dsh: &DshConfig<'_>) -> Vec<Agent> {
     if !named.is_empty() {
         return named.to_vec();
@@ -150,7 +130,6 @@ fn groups<'a>(doc: &'a mut Value, event: &str) -> Option<&'a mut Vec<Value>> {
     doc.get_mut("hooks")?.get_mut(event)?.as_array_mut()
 }
 
-/// Drops empty groups, events and the `hooks` object itself.
 fn tidy(doc: &mut Value) {
     let Some(hooks) = doc.get_mut("hooks").and_then(Value::as_object_mut) else {
         return;
@@ -198,8 +177,6 @@ fn add_ats(doc: &mut Value, agent: Agent, ats: &Path) {
     }
 }
 
-/// Puts moved hooks back where they were: into the `Bash` group at their
-/// position when it is still there, else into a new group at its place.
 fn restore(doc: &mut Value, moved: &[Moved]) {
     let mut order: Vec<&Moved> = moved.iter().collect();
     order.sort_by_key(|m| (m.group, m.index));
@@ -229,7 +206,6 @@ fn restore(doc: &mut Value, moved: &[Moved]) {
     }
 }
 
-/// `text` without ats's instruction block.
 fn without_block(text: &str) -> String {
     match (text.find(BEGIN), text.find(END)) {
         (Some(b), Some(e)) if b < e => {
@@ -245,7 +221,6 @@ fn without_block(text: &str) -> String {
     }
 }
 
-/// `text` with ats's instruction block at the end.
 fn with_block(text: &str, block: &str) -> String {
     let base = without_block(text);
     if base.trim().is_empty() {
@@ -255,8 +230,6 @@ fn with_block(text: &str, block: &str) -> String {
     }
 }
 
-/// The instructions between markers, for an agent to add to its own
-/// instructions file and to find again for removal (`ats instructions`).
 pub fn instructions_block() -> String {
     format!("{BEGIN}\n{INSTRUCTIONS}\n{END}\n")
 }
@@ -271,7 +244,6 @@ For queued jobs or ats errors, read and follow `{}`. Use `--now` only when asked
     )
 }
 
-/// `text` without the import line, or a block an earlier version wrote.
 fn without_include(text: &str) -> String {
     let base = without_block(text);
     let line = format!("{INCLUDE}\n");
@@ -286,7 +258,6 @@ fn without_include(text: &str) -> String {
     base
 }
 
-/// `text` with the import line at the end.
 fn with_include(text: &str) -> String {
     let base = without_include(text);
     if base.trim().is_empty() {
@@ -296,8 +267,6 @@ fn with_include(text: &str) -> String {
     }
 }
 
-/// In Claude Code modes that ask before shell commands, each `ats run`
-/// asks too. An allow rule for `ats run` would allow any command.
 fn claude_asks(doc: &Value) -> bool {
     !matches!(
         doc["permissions"]["defaultMode"].as_str(),
@@ -305,7 +274,6 @@ fn claude_asks(doc: &Value) -> bool {
     )
 }
 
-/// One file to write; `new` is `None` to remove the file.
 struct Change {
     path: PathBuf,
     old: Option<String>,
@@ -344,8 +312,6 @@ fn ask(input: &mut dyn BufRead, out: &mut impl Write, question: &str) -> Result<
     Ok(matches!(line.trim(), "y" | "Y" | "yes"))
 }
 
-/// With `start`, ensure the login service is loaded, including on a retry
-/// whose files already match after an earlier service-start failure.
 #[allow(clippy::too_many_arguments)]
 pub fn install<W: Write>(
     paths: &Paths,
@@ -450,7 +416,6 @@ fn install_with<W: Write>(
     if agents.contains(&Agent::Codex) {
         notes.push("Codex asks you to trust the changed hooks the next time it starts.".into());
     }
-    // Shown with the diffs, before the question.
     for note in &notes {
         writeln!(out, "Note: {note}")?;
     }
@@ -468,8 +433,6 @@ fn install_with<W: Write>(
     Ok(())
 }
 
-/// With `all`, the login service goes too; with `start`, it is unloaded
-/// first.
 #[allow(clippy::too_many_arguments)]
 pub fn uninstall(
     paths: &Paths,
@@ -543,8 +506,6 @@ pub fn uninstall(
     Ok(())
 }
 
-/// Shows the changes and asks once. Returns the changes to write, if the
-/// user agreed.
 fn review(
     changes: Vec<Change>,
     confirm: Confirm,
@@ -583,7 +544,6 @@ fn review(
     Ok(Some(changes))
 }
 
-/// Backs up and writes each file, then the record.
 fn write(paths: &Paths, changes: &[Change], record: &Record, out: &mut impl Write) -> Result<()> {
     let backup = paths
         .home
@@ -617,7 +577,6 @@ fn write(paths: &Paths, changes: &[Change], record: &Record, out: &mut impl Writ
     Ok(())
 }
 
-/// Replaces `path` through a temporary file, keeping its permissions.
 fn write_atomic(path: &Path, text: &str) -> Result<()> {
     let dir = path.parent().expect("a parent directory");
     std::fs::create_dir_all(dir)?;
@@ -632,11 +591,9 @@ fn write_atomic(path: &Path, text: &str) -> Result<()> {
     std::fs::rename(&tmp, path).with_context(|| format!("writing {}", path.display()))
 }
 
-/// A unified diff from the system's `diff`.
 struct DiffFiles {
     old: tempfile::NamedTempFile,
     new: tempfile::NamedTempFile,
-    // Drop files before removing the private directory.
     _dir: tempfile::TempDir,
 }
 
@@ -719,7 +676,6 @@ mod tests {
                 .contains("Nothing to change.")
         );
 
-        // Neither a no-op dry run nor declining real changes starts it.
         for (confirm, binary) in [
             (Confirm::DryRun, ats),
             (Confirm::Ask(&mut b"n\n".as_slice()), Path::new("/new/ats")),
@@ -799,7 +755,6 @@ mod tests {
         std::fs::create_dir_all(home.join(".claude")).unwrap();
         let settings = home.join(".claude/settings.json");
         let instructions = home.join(".claude/CLAUDE.md");
-        // Agents keep this file indented by two spaces.
         let original = json_text(&serde_json::from_str(SETTINGS).unwrap());
         std::fs::write(&settings, &original).unwrap();
         std::fs::write(&instructions, "# Mine\n\nKeep this.\n").unwrap();
@@ -866,7 +821,6 @@ mod tests {
                 .is_some()
         );
 
-        // Installing again changes nothing.
         assert!(
             run(
                 |i, o| install(
@@ -920,8 +874,6 @@ mod tests {
         let (_dir, paths, home) = setup();
         std::fs::create_dir_all(home.join(".claude")).unwrap();
         let settings = home.join(".claude/settings.json");
-        // An earlier install moved the rewriting hook into its chain, added
-        // a PreToolUse hook, and wrote its instructions in place.
         let mut earlier = read_json_str(SETTINGS);
         earlier["hooks"]["PreToolUse"][1] = json!({ "matcher": "Bash", "hooks": [{ "type": "command", "command": "/opt/ats hook claude pre-tool-use" }] });
         earlier["permissions"] = json!({ "defaultMode": "auto" });

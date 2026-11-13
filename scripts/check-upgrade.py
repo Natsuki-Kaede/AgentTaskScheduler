@@ -124,8 +124,6 @@ def rollback(old, new):
             assert home.sql("PRAGMA user_version") == [(5,)]
             assert home.sql("SELECT * FROM jobs ORDER BY id") == records
             assert home.sql("PRAGMA integrity_check") == [("ok",)]
-            # No process owns this database now. SQLite backup replaces its schema
-            # consistently, without copying a live database apart from its WAL.
             with contextlib.closing(sqlite3.connect(backup)) as source:
                 with contextlib.closing(sqlite3.connect(home.root / "ats.db")) as destination:
                     source.backup(destination)

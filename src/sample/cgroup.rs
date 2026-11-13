@@ -11,7 +11,6 @@ fn invalid(message: &str) -> io::Error {
 }
 
 fn mount_path(word: &str) -> PathBuf {
-    // mountinfo escapes spaces, tabs, newlines and backslashes as octal bytes.
     PathBuf::from(
         word.replace("\\040", " ")
             .replace("\\011", "\t")
@@ -51,7 +50,6 @@ fn location(membership: &str, mounts: &str) -> io::Result<(PathBuf, PathBuf)> {
             candidates.push((root.components().count(), mount.join(relative), mount));
         }
     }
-    // Prefer the broadest mount so ancestor restrictions remain visible.
     candidates.sort_by_key(|c| c.0);
     candidates
         .into_iter()
@@ -63,8 +61,6 @@ fn location(membership: &str, mounts: &str) -> io::Result<(PathBuf, PathBuf)> {
 fn limits(group: &Path, mount: &Path) -> io::Result<Vec<MemoryScope>> {
     let mut scopes = Vec::new();
     for directory in group.ancestors() {
-        // Missing controllers can be inherited from an ancestor. Missing groups
-        // themselves or unreadable limit files must not imply unlimited capacity.
         if !directory.is_dir() {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,

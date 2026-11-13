@@ -1,7 +1,4 @@
-//! Size-capped output log (design 7.2): keeps the head of the output in the
-//! file, keeps the most recent tail in memory once the head is full, and
-//! appends the tail when the stream ends. Reading never stops, so the
-//! writing process never sees a closed pipe because of the cap.
+//! Captures command output in size-capped logs.
 
 use std::collections::VecDeque;
 use std::fs::File;
@@ -44,7 +41,6 @@ impl CappedLog {
         Ok(())
     }
 
-    /// Writes the kept tail, with a marker for the omitted middle.
     pub fn finish(mut self) -> std::io::Result<()> {
         if self.dropped > 0 {
             writeln!(self.file, "\n[ats: {} bytes omitted]", self.dropped)?;

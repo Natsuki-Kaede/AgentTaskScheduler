@@ -1,5 +1,4 @@
-//! Fault injection against the real binary (design 7.1): the daemon or an
-//! executor is killed while a job runs.
+//! Tests recovery after daemon or executor loss.
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output};
@@ -53,7 +52,6 @@ impl Home {
         Command::new(env!("CARGO_BIN_EXE_ats"))
             .args(args)
             .env("ATS_HOME", &self.path)
-            // Tests may themselves run inside an ats job.
             .env_remove("ATS_JOB_ID")
             .output()
             .unwrap()
@@ -110,7 +108,6 @@ fn wait_until(what: &str, limit: Duration, mut done: impl FnMut() -> bool) {
     }
 }
 
-/// Submits without waiting and returns the submission and job ids.
 fn submit(home: &Home, source: &str) -> (String, String) {
     submit_with_options(home, source, &[])
 }
@@ -191,8 +188,6 @@ fn a_job_survives_a_daemon_crash_and_reports_after_the_restart() {
     });
 
     daemon.kill();
-    // The job ends while the daemon is down; its executor keeps the result
-    // until the daemon is back.
     std::thread::sleep(Duration::from_secs(3));
     let _daemon = home.daemon();
 
@@ -231,12 +226,10 @@ fn a_lost_executor_holds_the_job_until_its_processes_exit() {
     wait_until("awaiting_takeover", Duration::from_secs(5), || {
         home.job(&job)["state"] == "awaiting_takeover"
     });
-    // The command was not reported, so its exit code is unknown.
     wait_until("ended_unknown", Duration::from_secs(10), || {
         home.job(&job)["state"] == "ended_unknown"
     });
     assert!(home.job(&job)["exit_code"].is_null());
-    // The killed executor could not remove its error log.
     let _ = std::fs::remove_file(home.path.join("executors").join(format!("{job}.log")));
 }
 
@@ -261,7 +254,6 @@ impl Drop for Worker {
     fn drop(&mut self) {
         self.kill();
         if std::thread::panicking() {
-            // Keep failure cleanup inside this test's daemon and data directory.
             let _ = std::fs::write(self.home.join("release-parent"), "release");
             for args in [
                 vec!["cancel", &self.submission],
@@ -335,7 +327,6 @@ fn restart_then_executor_loss_retains_an_escaped_worker_and_its_lock() {
     assert!(rejected["error"].as_str().unwrap().contains(&job));
     worker.kill();
     assert!(home.ats(&["wait", &sub, "--wait", "10s"]).status.success());
-    // Clean up the waiting task; admission may still be held by recovery or pressure.
     assert!(home.ats(&["cancel", &waiting]).status.success());
     assert_ne!(
         home.ats(&["wait", &waiting, "--wait", "10s"]).status.code(),

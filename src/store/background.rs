@@ -8,7 +8,6 @@ use crate::domain::process::ProcessIdentity;
 use crate::domain::resource::QosObligation;
 
 impl Store {
-    /// Commit both the process intent and the job's inheritance responsibility before I/O.
     pub fn remember_background_for_job(&self, job: &str, pid: i32, start: &str) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         tx.execute(
@@ -56,7 +55,6 @@ impl Store {
         Ok(())
     }
 
-    /// Forget only after restoration succeeds or this identity is gone.
     pub fn forget_background(&self, pid: i32, start: &str) -> Result<()> {
         self.conn.execute(
             "DELETE FROM background_processes WHERE pid = ?1 AND start = ?2",

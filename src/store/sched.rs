@@ -1,4 +1,4 @@
-//! Store operations for admission (design 10).
+//! Store operations for admission.
 
 use anyhow::Result;
 use rusqlite::{OptionalExtension, params};
@@ -16,7 +16,6 @@ pub(super) fn in_list(states: &[&str]) -> String {
         .join(",")
 }
 
-/// A predecessor named by `--after`, as its dependents see it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Predecessor {
     pub job: String,
@@ -25,7 +24,6 @@ pub struct Predecessor {
 }
 
 impl Predecessor {
-    /// Only completion with exit code 0 satisfies `--after` (design 10.4).
     pub fn succeeded(&self) -> bool {
         self.state == crate::domain::job::JobState::Completed && self.exit_code == Some(0)
     }
@@ -91,7 +89,6 @@ impl Store {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
-    /// Jobs waiting for a lease, oldest first.
     pub fn queued_jobs(&self) -> Result<Vec<QueuedJob>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT id, state, created_at, predicted_private, predicted_seconds, run_now, executor_pid, executor_start
@@ -122,7 +119,6 @@ impl Store {
             .collect()
     }
 
-    /// Jobs holding a lease.
     pub fn held_jobs(&self) -> Result<Vec<HeldJob>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT id, reserved_private, predicted_seconds, started_at FROM jobs WHERE state IN ({})",
@@ -147,10 +143,6 @@ impl Store {
             .collect()
     }
 
-    /// Commits a lease with its reservation (design 7.1: before the
-    /// executor is told). Only a waiting job with a registered executor can
-    /// be admitted. A jobserver pool gets one token fewer than the
-    /// parallelism: each client runs one job without a token (design 10.5).
     pub fn admit(&mut self, job: &str, reserved: u64, parallelism: u32) -> Result<()> {
         let tx = self.conn.transaction()?;
         let (state, executor, finish): (JobState, Option<i64>, Option<JobState>) = tx
@@ -212,8 +204,6 @@ impl Store {
         Ok(terms)
     }
 
-    /// Moves a job between the states before its lease (queued, blocked,
-    /// capacity insufficient).
     pub fn set_queue_state(&mut self, job: &str, next: JobState) -> Result<()> {
         let tx = self.conn.transaction()?;
         let state: JobState = tx
@@ -222,7 +212,6 @@ impl Store {
             })
             .optional()?
             .ok_or_else(|| no_job(job))?;
-        // A scheduling snapshot may race a cancellation or completion.
         if !state.pre_lease() || state == next {
             return Ok(());
         }
@@ -238,7 +227,6 @@ impl Store {
         Ok(())
     }
 
-    /// A job id, or the job of a submission id.
     pub fn resolve_job(&self, id: &str) -> Result<Option<String>> {
         Ok(self
             .conn
@@ -250,7 +238,6 @@ impl Store {
             .optional()?)
     }
 
-    /// `ats unblock`: drops the failed predecessors so the job can run.
     pub fn unblock(&mut self, job: &str) -> Result<()> {
         let failed: Vec<String> = self
             .predecessors(job)?

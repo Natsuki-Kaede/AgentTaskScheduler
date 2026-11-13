@@ -211,7 +211,6 @@ impl Store {
         self.apply_report(job, Report::Finished(state, exit_code, max_rss), None)
     }
 
-    /// Accept a replay-safe report without claiming that all owned work has exited.
     pub fn report_finish(&mut self, job: &str, report: &FinishReport) -> Result<()> {
         let tx = self.conn.transaction()?;
         let current = current(&tx, job)?;
@@ -240,7 +239,6 @@ impl Store {
         Ok(())
     }
 
-    /// Reject a stale recovery decision before changing state, members or events.
     pub fn recover(
         &mut self,
         expected: &ActiveJob,
@@ -261,7 +259,6 @@ impl Store {
     }
 }
 
-// The persistence adapter owns SQL conversion; the domain has no SQLite dependency.
 impl rusqlite::types::FromSql for JobState {
     fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
         value

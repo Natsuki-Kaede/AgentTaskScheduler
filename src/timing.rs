@@ -1,9 +1,8 @@
 //! The elapsed clock: time since boot including system sleep, unaffected
-//! by wall-clock changes. Bounded waits count sleep (design 5.2).
+//! by wall-clock changes. Bounded waits count sleep.
 
 use std::time::Duration;
 
-// macOS CLOCK_MONOTONIC counts sleep; Linux needs CLOCK_BOOTTIME for that.
 #[cfg(target_os = "macos")]
 const CLOCK: libc::clockid_t = libc::CLOCK_MONOTONIC;
 #[cfg(target_os = "linux")]
@@ -20,22 +19,18 @@ fn read(clock: libc::clockid_t) -> Duration {
     Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
 }
 
-/// Time since boot, including sleep.
 pub fn elapsed() -> Duration {
     read(CLOCK)
 }
 
-/// A point in time measured on the elapsed clock.
 #[derive(Debug, Clone, Copy)]
 pub struct Deadline(Option<Duration>);
 
 impl Deadline {
-    /// A deadline `after` from now; `None` never expires.
     pub fn after(after: Option<Duration>) -> Self {
         Deadline(after.map(|d| elapsed() + d))
     }
 
-    /// Time left, or `None` for a deadline that never expires.
     pub fn remaining(&self) -> Option<Duration> {
         self.0.map(|at| at.saturating_sub(elapsed()))
     }
@@ -44,8 +39,6 @@ impl Deadline {
         self.remaining().is_some_and(|r| r.is_zero())
     }
 
-    /// Bounds a future with the same sleep-aware deadline as bounded waits.
-    /// Periodic checks also notice system sleep while an I/O future is idle.
     pub async fn run<F: std::future::Future>(&self, future: F) -> std::io::Result<F::Output> {
         tokio::pin!(future);
         loop {
@@ -67,7 +60,6 @@ impl Deadline {
     }
 }
 
-/// Current time as an RFC 3339 string with milliseconds.
 pub fn now() -> String {
     humantime::format_rfc3339_millis(std::time::SystemTime::now()).to_string()
 }

@@ -68,7 +68,6 @@ struct Cli {
     command: Command,
 }
 
-// Parsed once per process, so the size of `Run` does not matter.
 #[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum Command {
@@ -189,9 +188,6 @@ enum Command {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    // Commands that print stop quietly when their reader goes away, as in
-    // `ats status | head`. The daemon and executors write to sockets and
-    // must not be killed by a closed one.
     if !matches!(cli.command, Command::Daemon | Command::Executor { .. }) {
         // SAFETY: sets the default action before any thread starts.
         unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
@@ -212,7 +208,6 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
         Command::Daemon => {
             tracing_subscriber::fmt()
                 .with_writer(std::io::stderr)
-                // The login service sends stderr to a file or the journal.
                 .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
                 .init();
             daemon::run(paths, daemon::shutdown_signal()).await?;
@@ -233,10 +228,6 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
                 },
                 None => runspec::RunSpec::Argv { argv },
             };
-            // Inside a job the command runs directly: queueing it would
-            // wait on the job that is already holding its memory (design
-            // 6.3). Other direct commands still queue when explicit
-            // dependencies or locks need the scheduler.
             if std::env::var_os(executor::JOB_ENV).is_some()
                 || (options.after.is_empty()
                     && options.lock.is_empty()
@@ -358,7 +349,6 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
     }
 }
 
-/// Whether the command is light, interactive or a service (design 8.2).
 fn runs_directly(paths: &paths::Paths, spec: &runspec::RunSpec) -> Result<bool> {
     let config = config::Config::load(paths)?;
     let profiles = profile::Profiles::load(Some(&paths.profiles))?;
@@ -371,10 +361,6 @@ fn runs_directly(paths: &paths::Paths, spec: &runspec::RunSpec) -> Result<bool> 
     Ok(analysis.light || analysis.interactive || analysis.segments.iter().any(|s| s.service))
 }
 
-/// The agent session the command comes from, as the agent sets it in the
-/// environment of its shell commands (design 6.2). DSH rebuilds its managed
-/// environment for each shell execution, so its session takes precedence
-/// over inherited variables from an outer agent.
 fn agent_session() -> Option<String> {
     [
         "DSH_SESSION_ID",

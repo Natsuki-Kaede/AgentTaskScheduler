@@ -42,7 +42,6 @@ impl App {
                     Stats::default()
                 })
         };
-        // Recognition and path resolution do not hold the database mutex.
         let mut plan = planner::plan(
             &analysis,
             &self.profiles,

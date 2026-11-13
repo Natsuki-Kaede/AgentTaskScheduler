@@ -1,10 +1,5 @@
-//! Process facts the daemon uses to recognize executors and job processes
-//! (design 7.1, 9): a process is identified by its id and start time, and
-//! job processes descend from their executor or share the command's process
-//! group.
+//! Reads process identities and observations from the operating system.
 
-/// Start time of a process, or `None` when it does not exist. Together with
-/// the process id it identifies one process, since ids are reused.
 pub fn start_time(pid: i32) -> Option<String> {
     imp::proc(pid).ok().flatten().map(|p| p.start)
 }
@@ -13,12 +8,10 @@ pub fn probe(pid: i32) -> std::io::Result<Option<Proc>> {
     imp::proc(pid)
 }
 
-/// True when the process with this id and start time still exists.
 pub fn alive(pid: i32, start: &str) -> bool {
     start_time(pid).is_some_and(|s| s == start)
 }
 
-/// True when any process in the group still exists.
 #[cfg(test)]
 pub fn group_alive(pgid: i32) -> bool {
     // SAFETY: signal 0 only checks for existence.
@@ -29,7 +22,6 @@ pub use crate::domain::process::Process as Proc;
 use crate::domain::process::ProcessTable;
 use crate::runtime::family::Family;
 
-/// Refresh a local executor's ownership without forgetting it on enumeration failure.
 pub fn refresh(family: &mut Family, pgid: i32) {
     match snapshot() {
         Ok(table) => family.observe(Some(pgid), None, &table),
@@ -48,7 +40,6 @@ pub fn signal(family: &Family, signal: i32) {
     }
 }
 
-/// Failure to enumerate processes must not be treated as an empty machine.
 pub fn snapshot() -> std::io::Result<ProcessTable> {
     let mut table = ProcessTable::default();
     for pid in imp::all_pids()? {
@@ -63,7 +54,6 @@ pub fn snapshot() -> std::io::Result<ProcessTable> {
     Ok(table)
 }
 
-/// Every process the system lists.
 #[cfg(test)]
 pub fn list() -> Vec<Proc> {
     snapshot().map(|t| t.processes).unwrap_or_default()
@@ -73,7 +63,6 @@ pub fn list() -> Vec<Proc> {
 mod imp {
     use super::Proc;
 
-    /// Reads `/proc/<pid>/stat`. The start time is in clock ticks since boot.
     pub fn proc(pid: i32) -> std::io::Result<Option<Proc>> {
         let stat = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
             Ok(stat) => stat,
@@ -86,7 +75,6 @@ mod imp {
     }
 
     fn parse(pid: i32, stat: &str) -> Option<Option<Proc>> {
-        // The command name in parentheses can hold spaces and parentheses.
         let fields: Vec<&str> = stat
             .get(stat.rfind(')')? + 1..)?
             .split_whitespace()
@@ -94,7 +82,6 @@ mod imp {
         if matches!(fields.first(), Some(&"Z" | &"X")) {
             return Some(None);
         }
-        // Fields 4, 5 and 22 of proc(5), counted from the state (field 3).
         Some(Some(Proc {
             pid,
             ppid: fields.get(1)?.parse().ok()?,
@@ -143,7 +130,6 @@ mod imp {
         }
         // SAFETY: the call filled the whole struct.
         let i = unsafe { info.assume_init() };
-        // sys/proc.h: SZOMB. A zombie cannot run or hold output pipes.
         if i.pbi_status == 5 {
             return Ok(None);
         }

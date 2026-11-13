@@ -56,8 +56,6 @@ pub(super) fn held(
             if limits.is_empty() {
                 continue;
             }
-            // An unreadable memory value gets no resident credit. Charge the
-            // whole reservation in each scope when a job spans several scopes.
             let resident = crate::sample::process_memory(identity.pid)
                 .map_or(0, |memory| memory.private_resident);
             if !crate::procinfo::probe(identity.pid)?

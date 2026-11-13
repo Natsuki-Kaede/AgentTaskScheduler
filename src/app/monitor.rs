@@ -56,10 +56,6 @@ fn observe_with(
     result
 }
 
-/// Samples every second until the daemon stops: publishes the snapshot,
-/// records each job's peak memory when it grows (which also raises its
-/// reservation), and runs the pressure response. Runs on its own thread: a
-/// sample makes many system calls.
 pub(crate) fn sample_loop(state: &App, mut registry: crate::runtime::registry::Registry) {
     let mut sampler = Sampler::default();
     let mut response = super::pressure::Response::default();
@@ -113,13 +109,11 @@ pub(crate) fn sample_loop(state: &App, mut registry: crate::runtime::registry::R
     }
 }
 
-/// Deletes ended jobs older than the history window, and their logs.
 pub(crate) fn prune(state: &App) -> Result<()> {
     let before =
         humantime::format_rfc3339_millis(std::time::SystemTime::now() - store::KEEP).to_string();
     let pruned = state.store().prune(&before)?;
     for (job, log) in &pruned {
-        // Each job's log directory is named after it.
         if let Some(dir) = log
             .as_deref()
             .map(std::path::Path::new)
@@ -161,8 +155,6 @@ mod tests {
             }
             fn alive(&self, _: i64, _: &str) -> bool {
                 assert!(!self.injected.replace(true));
-                // Started and membership can commit after sweep reads Admitted,
-                // before the executor disappears and its liveness probe returns.
                 self.app.started(&self.job, "/logs", Some(20)).unwrap();
                 observe_with(self.app, &mut self.registry.borrow_mut(), || {
                     Ok(ProcessTable {
@@ -249,7 +241,6 @@ mod tests {
             fn ready(&self, job: &crate::domain::job::ActiveJob) -> bool {
                 let ready = self.system.ready(job);
                 assert!(ready);
-                // The monitor thread can invalidate the observation at this point.
                 assert!(
                     observe_with(self.app, &mut self.registry.borrow_mut(), || {
                         Err(std::io::Error::other("enumeration failed"))
@@ -287,7 +278,6 @@ mod tests {
             })
             .unwrap()
             .job;
-        // A readable PID with a different identity deterministically models executor loss.
         app.register_executor(&job, i64::from(std::process::id()), "old-executor")
             .unwrap();
         app.test_admit(&job, 100, 1);
@@ -317,12 +307,10 @@ mod tests {
         assert_eq!(app.job(&job).unwrap().state, JobState::AwaitingTakeover);
         assert_eq!(app.store().process_members().unwrap(), saved);
 
-        // A fresh pass must observe the failure rather than reuse the previous snapshot.
         recovery::sweep(&app, &recovery::System::new(&app), &mut terminating).unwrap();
         assert_eq!(app.job(&job).unwrap().state, JobState::AwaitingTakeover);
         assert_eq!(app.store().process_members().unwrap(), saved);
 
-        // Once a later observation confirms exit, recovery can release the job.
         observe_with(&app, &mut procs.registry.borrow_mut(), || {
             Ok(ProcessTable::default())
         })

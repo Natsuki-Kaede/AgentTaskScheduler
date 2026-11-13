@@ -216,8 +216,6 @@ mod tests {
             }
         };
 
-        // The CLI and the executor both register the same process; another
-        // process is refused.
         for _ in 0..2 {
             let executor = json!({"pid": 1, "start": "t"});
             assert_eq!(
@@ -230,14 +228,10 @@ mod tests {
             post(format!("/v1/jobs/{job}/executor"), other).await,
             StatusCode::CONFLICT
         );
-        // The lease comes from the scheduler; until it decides, the answer
-        // is "not yet".
         let lease_path = format!("/v1/jobs/{job}/lease");
         let lease = |pid: i64| call(&app, "POST", &lease_path, Some(json!({"pid": pid})));
         assert_eq!(lease(1).await.1["granted"], false);
         state.test_admit(&job, 1 << 30, 1);
-        // Asking again after a lost answer gets the same lease; only the
-        // executor gets it.
         for _ in 0..2 {
             assert_eq!(lease(1).await.1["granted"], true);
         }
@@ -275,7 +269,6 @@ mod tests {
             json!({"state": "completed", "exit_code": 2}),
         )
         .await;
-        // A repeated report is accepted; a different end is refused.
         let again = json!({"state": "completed", "exit_code": 2});
         assert_eq!(
             post(format!("/v1/jobs/{job}/finished"), again).await,

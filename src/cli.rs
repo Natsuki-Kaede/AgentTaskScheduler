@@ -1,5 +1,4 @@
-//! Client commands: `ats run`, `wait`, `status`, `logs`, `cancel`, `detach`
-//! and the return contract of design 5.4.
+//! Implements the daemon client commands.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -22,22 +21,16 @@ use crate::protocol::{
 use crate::runspec::RunSpec;
 use crate::timing::Deadline;
 
-/// The command was not finished within the wait; it continues in the
-/// background.
 pub const EXIT_DETACHED: u8 = 75;
-/// The command cannot run because a predecessor failed.
 pub const EXIT_BLOCKED: u8 = 76;
-/// The submission was rejected.
 pub const EXIT_REJECTED: u8 = 77;
 
-/// Lines of log attached when a failed terminal state is retrieved.
 const TAIL_LINES: usize = 50;
-/// Longest single wait request, so a request-file answer stays bounded.
 const WAIT_CHUNK: Duration = Duration::from_secs(30);
 const FOLLOW_POLL: Duration = Duration::from_millis(500);
 const RECONNECT_PAUSE: Duration = Duration::from_millis(500);
 
-/// Scheduling options of `ats run` (design 5.2).
+/// Scheduling options of `ats run`.
 #[derive(clap::Args, Debug, Default)]
 pub struct RunOptions {
     /// Run only after these jobs or submissions succeed (comma-separated).
@@ -84,8 +77,6 @@ async fn post(paths: &Paths, path: &str, body: impl serde::Serialize) -> Result<
     Ok(())
 }
 
-/// Waits for a submission to reach `until` ("main" or "terminal"), in
-/// bounded requests. Returns whether it was reached, and the submission.
 async fn wait_for(
     paths: &Paths,
     submission: &str,
@@ -109,8 +100,6 @@ async fn wait_for(
         .await;
         let answer = match (called, &last) {
             (Ok((answer, _)), _) => answer,
-            // Once the daemon has answered, an unreachable daemon is
-            // restarting; keep waiting within the time limit.
             (Err(_), Some(last)) if deadline.expired() => return Ok((false, last.clone())),
             (Err(_), Some(_)) => {
                 tokio::time::sleep(RECONNECT_PAUSE).await;
@@ -131,7 +120,6 @@ fn exit_code(code: i64) -> ExitCode {
     ExitCode::from(u8::try_from(code).unwrap_or(1))
 }
 
-/// The one-line status printed instead of command output (design 5.4).
 fn status_line(sub: &Submission) -> String {
     let log = sub.log_path.as_deref().unwrap_or("not started yet");
     format!(
@@ -144,7 +132,6 @@ fn read_log(dir: &Path, name: &str) -> Vec<u8> {
     std::fs::read(dir.join(name)).unwrap_or_default()
 }
 
-/// Writes the command's own output unchanged (design 5.4).
 fn print_output(sub: &Submission) -> Result<()> {
     if let Some(dir) = sub.log_path.as_deref() {
         let dir = Path::new(dir);
@@ -155,7 +142,6 @@ fn print_output(sub: &Submission) -> Result<()> {
     Ok(())
 }
 
-/// Prints the last lines of each non-empty stream, for failed jobs.
 fn print_tails(log_path: Option<&str>) {
     let Some(dir) = log_path else { return };
     for name in ["stdout.log", "stderr.log"] {
@@ -177,8 +163,6 @@ fn failed(sub: &Submission) -> bool {
     sub.job_state != JobState::Completed || sub.exit_code != Some(0)
 }
 
-/// `ats run`: submits, starts the executor, and returns the main execution
-/// process result or a status line.
 pub async fn run(
     paths: &Paths,
     spec: RunSpec,
@@ -213,8 +197,6 @@ pub async fn run(
     let (submission, job) = (&created.submission, &created.job);
 
     match executor::spawn_detached(paths, job, &spec, &cwd) {
-        // Register the executor before this process can exit, so the job
-        // always has a known starter (the executor registers too).
         Ok(pid) => {
             if let Some(start) = procinfo::start_time(pid) {
                 let body = serde_json::to_value(ExecutorRequest {
@@ -261,8 +243,6 @@ pub async fn run(
     Ok(ExitCode::from(EXIT_DETACHED))
 }
 
-/// The submission's result has reached the agent: reminders leave it out
-/// (design 6.2). Should the daemon miss this, a reminder names it once.
 async fn delivered(paths: &Paths, sub: &Submission) {
     let id = &sub.id;
     let _ = client::call(paths, "POST", &format!("/v1/submissions/{id}/quiet"), None).await;
@@ -278,13 +258,10 @@ fn terminal_line(sub: &Submission) -> String {
     )
 }
 
-/// Reports a submission's terminal state and attaches log tails on
-/// failure (design 5.4).
 fn terminal_exit_code(sub: &Submission) -> ExitCode {
     match sub.job_state {
         JobState::Completed => exit_code(sub.exit_code.unwrap_or(1)),
         JobState::StartFailed => exit_code(sub.exit_code.unwrap_or(127)),
-        // A successful main process does not make canceled remaining work successful.
         _ => exit_code(sub.exit_code.filter(|code| *code != 0).unwrap_or(1)),
     }
 }
@@ -297,7 +274,6 @@ fn report_terminal(sub: &Submission) -> ExitCode {
     terminal_exit_code(sub)
 }
 
-/// Reports a job held back by a failed predecessor (design 5.4: 76).
 async fn blocked(paths: &Paths, sub: &Submission) -> Result<ExitCode> {
     let job = &sub.job;
     let why: WhyResponse = get(paths, &format!("/v1/jobs/{job}/why")).await?;
@@ -313,16 +289,12 @@ async fn blocked(paths: &Paths, sub: &Submission) -> Result<ExitCode> {
     Ok(ExitCode::from(EXIT_BLOCKED))
 }
 
-/// `ats wait`: waits for the job's terminal state and returns the
-/// command's output and exit code (design 5.3, 5.4).
 pub async fn wait(paths: &Paths, submission: &str, wait: Option<Duration>) -> Result<ExitCode> {
     let (reached, sub) = wait_for(paths, submission, WaitUntil::Terminal, wait).await?;
     if sub.job_state == JobState::Blocked {
         return blocked(paths, &sub).await;
     }
     if reached {
-        // The command's own output, as `ats run` would have returned it,
-        // then the job's end state.
         print_output(&sub)?;
         eprintln!("{}", terminal_line(&sub));
         delivered(paths, &sub).await;
@@ -332,7 +304,6 @@ pub async fn wait(paths: &Paths, submission: &str, wait: Option<Duration>) -> Re
     Ok(ExitCode::from(EXIT_DETACHED))
 }
 
-/// `ats status <id>`: a submission or a job.
 pub async fn status_one(paths: &Paths, id: &str, json_out: bool) -> Result<ExitCode> {
     if id.starts_with("j_") {
         let job: Job = get(paths, &format!("/v1/jobs/{id}")).await?;
@@ -355,7 +326,6 @@ pub async fn status_one(paths: &Paths, id: &str, json_out: bool) -> Result<ExitC
     Ok(ExitCode::SUCCESS)
 }
 
-/// The log directory and state of a submission or job.
 async fn log_target(paths: &Paths, id: &str) -> Result<(Option<PathBuf>, JobState, String)> {
     let job: Job = if id.starts_with("j_") {
         get(paths, &format!("/v1/jobs/{id}")).await?
@@ -366,8 +336,6 @@ async fn log_target(paths: &Paths, id: &str) -> Result<(Option<PathBuf>, JobStat
     Ok((job.log_path.map(PathBuf::from), job.state, job.id))
 }
 
-/// `ats logs <id> [-f]`: prints the logs, stdout to stdout and stderr to
-/// stderr; with `follow`, keeps printing until the job ends.
 pub async fn logs(paths: &Paths, id: &str, follow: bool) -> Result<ExitCode> {
     let mut offsets = [0usize; 2];
     loop {
@@ -397,7 +365,6 @@ pub async fn logs(paths: &Paths, id: &str, follow: bool) -> Result<ExitCode> {
     }
 }
 
-/// `ats cancel` / `ats detach`.
 pub async fn mark(paths: &Paths, submission: &str, action: &str) -> Result<ExitCode> {
     post(
         paths,
@@ -410,7 +377,6 @@ pub async fn mark(paths: &Paths, submission: &str, action: &str) -> Result<ExitC
     Ok(ExitCode::SUCCESS)
 }
 
-/// A submission or job id to its job id.
 async fn job_of(paths: &Paths, id: &str) -> Result<String> {
     if id.starts_with("j_") {
         return Ok(id.to_string());
@@ -423,7 +389,6 @@ fn gib(bytes: f64) -> String {
     format!("{:.1}G", bytes / (1u64 << 30) as f64)
 }
 
-/// One sentence for a scheduler verdict.
 fn explain(v: &Verdict) -> String {
     match v {
         Verdict::Admit => "it is being admitted now".into(),
@@ -457,7 +422,6 @@ fn explain(v: &Verdict) -> String {
     }
 }
 
-/// `ats why`: why a job is still waiting.
 pub async fn why(paths: &Paths, id: &str) -> Result<ExitCode> {
     let job = job_of(paths, id).await?;
     let why: WhyResponse = get(paths, &format!("/v1/jobs/{job}/why")).await?;
@@ -468,7 +432,6 @@ pub async fn why(paths: &Paths, id: &str) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// `ats unblock`: runs a job whose predecessor failed (design 5.3).
 pub async fn unblock(paths: &Paths, id: &str) -> Result<ExitCode> {
     let job = job_of(paths, id).await?;
     post(paths, &format!("/v1/jobs/{job}/unblock"), json!({})).await?;

@@ -1,12 +1,12 @@
+// Delivers ats session reminders through DSH lifecycle hooks.
+
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 
 export const name = 'agent-task-scheduler';
 export const inject = ['agents'];
-// Replaced by ats install with the absolute path of the installed binary.
 const DEFAULT_ATS = 'ats';
 
-/** Hook failures must not prevent a DSH step or turn from finishing. */
 export function hook(binary, event, input) {
   return new Promise((resolve) => {
     const child = spawn(binary, ['hook', 'dsh', event], { stdio: ['pipe', 'pipe', 'pipe'] });
@@ -32,10 +32,6 @@ function message(text) {
   return { id: randomUUID(), role: 'user', source: { kind: 'ats' }, content: [{ type: 'text', text }] };
 }
 
-/** DSH 0.2.2's pre-step waterfall admits messages; turn-stopping can append
- * next-step inbox work to continue the same turn. No transcript is rewritten.
- * Contract: deepseek-ai/deepseek-harness, packages/core/agent and agent-loop.
- */
 export function apply(ctx, config = {}) {
   const call = config.call ?? ((event, input) => hook(config.binary ?? DEFAULT_ATS, event, input));
   const sessions = new Map();

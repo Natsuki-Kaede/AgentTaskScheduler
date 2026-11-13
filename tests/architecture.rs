@@ -5,8 +5,6 @@ use std::path::{Path, PathBuf};
 use syn::visit::{self, Visit};
 use syn::{Attribute, Item, Meta, Token, UseTree};
 
-// Bitsets of possible truth values when `test` is false. Platform predicates
-// remain unknown, so code for every supported production target is inspected.
 fn production_values(meta: &Meta) -> u8 {
     match meta {
         Meta::Path(path) if path.is_ident("test") => 2,
@@ -220,7 +218,6 @@ impl<'ast> Visit<'ast> for Gate<'_> {
                 .unwrap_or_else(|error| panic!("{}: {error}", file.display()));
             let parsed = syn::parse_file(&source)
                 .unwrap_or_else(|error| panic!("{}: {error}", file.display()));
-            // The parsed file is local to this call, so use a nested visitor.
             let mut nested = Gate {
                 layer: self.layer,
                 module: self.module.clone(),

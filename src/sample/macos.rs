@@ -1,4 +1,4 @@
-//! macOS readings (design 9). None of them needs root; processes of other
+//! macOS readings. None of them needs root; processes of other
 //! users read as `None`.
 
 use std::ffi::CString;
@@ -24,8 +24,6 @@ fn sysctl<T: Copy>(name: &str) -> Option<T> {
     (r == 0 && len == size_of::<T>()).then(|| unsafe { v.assume_init() })
 }
 
-/// The kernel's page size, which page counts use. `hw.pagesize` gives the
-/// page size of this process instead: 4 KB under Rosetta on 16 KB kernels.
 fn page_size() -> u64 {
     sysctl::<u32>("vm.pagesize").map(u64::from).unwrap_or(16384)
 }
@@ -52,7 +50,6 @@ pub fn system() -> Option<System> {
     let app = (vm.internal_page_count as u64).saturating_sub(vm.purgeable_count as u64);
     Some(System {
         mem_total: sysctl::<u64>("hw.memsize")?,
-        // Activity Monitor's "memory used": app memory, wired and compressed.
         mem_used: pages(app + vm.wire_count as u64 + vm.compressor_page_count as u64),
         pressure: sysctl::<i32>("kern.memorystatus_vm_pressure_level").unwrap_or(0) as u8,
         swap_out_bytes: pages(vm.swapouts),
@@ -61,7 +58,6 @@ pub fn system() -> Option<System> {
 }
 
 const PROC_PIDREGIONPATHINFO: i32 = 8;
-// Share modes from <mach/vm_region.h> that are shared with other processes.
 const SM_SHARED: u32 = 4;
 const SM_TRUESHARED: u32 = 5;
 const SM_SHARED_ALIASED: u32 = 7;
@@ -99,9 +95,6 @@ struct RegionWithPath {
     path: [u8; 1024],
 }
 
-/// Walks the process's memory regions. Private anonymous memory is what
-/// admission counts (design 10.1); shared and file-backed pages are left
-/// out, so shared memory is not counted once per process.
 pub fn memory(pid: i32) -> Option<Memory> {
     let ps = page_size();
     let mut m = Memory::default();
@@ -157,7 +150,6 @@ mod tests {
             s.pressure
         );
 
-        // 64 MB of touched private memory shows up in the region walk.
         let me = std::process::id() as i32;
         let base = memory(me).unwrap();
         let block = vec![1u8; 64 << 20];

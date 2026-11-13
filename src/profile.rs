@@ -1,6 +1,4 @@
-//! Tool profiles (design 8.2): how to recognize a command and what it is
-//! known to use. Built-in profiles ship with ats; files in the data
-//! directory's `profiles.d/` add profiles or replace built-in ones by name.
+//! Loads and matches tool profiles.
 
 use std::path::Path;
 
@@ -9,8 +7,6 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 const BUILTIN: &str = include_str!("../profiles/builtin.toml");
 
-/// Load class (design 8.2). Light also needs no writes for a line to skip
-/// the queue (design 6.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Class {
@@ -19,28 +15,21 @@ pub enum Class {
     Heavy,
 }
 
-/// What a command writes, for locks (design 10.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Writes {
-    /// Nothing that needs a lock: the default.
     #[default]
     None,
-    /// The paths given as its positional arguments.
     Args,
-    /// The paths listed in `write_paths`, relative to the project root.
     Paths,
-    /// Anywhere in the project.
     Project,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Parallelism {
-    /// Environment variables that set the number of jobs.
     #[serde(default)]
     pub env: Vec<String>,
-    /// Command-line flag that sets it, such as `-j`.
     pub flag: Option<String>,
     #[serde(default)]
     pub jobserver: bool,
@@ -50,28 +39,18 @@ pub struct Parallelism {
 #[serde(deny_unknown_fields)]
 pub struct Profile {
     pub name: String,
-    /// Program names (basenames) this profile applies to.
     pub program: Vec<String>,
-    /// Leading positional words, such as `["build"]` or `["mod download"]`;
-    /// any one of them matches.
     #[serde(default)]
     pub subcommand: Vec<String>,
-    /// At least one of these arguments must be present.
     #[serde(default)]
     pub args_any: Vec<String>,
-    /// None of these arguments may be present.
     #[serde(default)]
     pub args_none: Vec<String>,
-    /// Global flags that take a value before the subcommand, such as
-    /// `-C` for git.
     #[serde(default)]
     pub value_flags: Vec<String>,
     pub class: Class,
-    /// A light command reading a larger file is medium instead.
     #[serde(default, deserialize_with = "size")]
     pub max_input: Option<u64>,
-    /// Typical peak memory, including allocations outside the private
-    /// range such as GPU memory.
     #[serde(default, deserialize_with = "size")]
     pub mem: Option<u64>,
     #[serde(default)]
@@ -80,7 +59,6 @@ pub struct Profile {
     pub write_paths: Vec<String>,
     #[serde(default)]
     pub interactive: bool,
-    /// Interactive when run without positional arguments (a REPL).
     #[serde(default)]
     pub interactive_without_args: bool,
     #[serde(default)]
@@ -109,7 +87,6 @@ fn size<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
     }
 }
 
-/// Parses sizes like `512M`, `4G` or `1.5G` (binary units).
 pub fn parse_size(text: &str) -> Result<u64, String> {
     let t = text.trim();
     let (num, unit) = t.split_at(t.find(|c: char| c.is_ascii_alphabetic()).unwrap_or(t.len()));
@@ -133,8 +110,6 @@ pub fn parse_size(text: &str) -> Result<u64, String> {
     Ok((n * (1u64 << shift) as f64) as u64)
 }
 
-/// The positional words of `args`, skipping flags (and the values of
-/// `value_flags`) and toolchain selectors such as `+nightly`.
 pub fn positionals<'a>(args: &'a [String], value_flags: &[String]) -> Vec<&'a str> {
     let mut out = Vec::new();
     let mut skip_next = false;
@@ -158,8 +133,6 @@ fn has_arg(args: &[String], wanted: &str) -> bool {
 }
 
 impl Profile {
-    /// How well this profile fits `argv`: `None` when it does not apply,
-    /// otherwise higher for more specific profiles.
     fn score(&self, argv: &[String]) -> Option<usize> {
         let program = Path::new(argv.first()?).file_name()?.to_str()?;
         if !self.program.iter().any(|p| p == program) {
@@ -198,8 +171,6 @@ pub struct Profiles {
 }
 
 impl Profiles {
-    /// The built-in profiles plus those in `dir` (`*.toml`, in name order),
-    /// which replace built-in ones of the same name.
     pub fn load(dir: Option<&Path>) -> Result<Self> {
         let mut list = parse(BUILTIN).context("built-in profiles")?;
         if let Some(dir) = dir.filter(|d| d.is_dir()) {
@@ -224,7 +195,6 @@ impl Profiles {
         Self::load(None).expect("built-in profiles parse")
     }
 
-    /// The most specific profile for `argv`; on a tie, the one loaded later.
     pub fn find(&self, argv: &[String]) -> Option<&Profile> {
         self.list
             .iter()

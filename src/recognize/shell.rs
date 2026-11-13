@@ -1,36 +1,25 @@
-//! A parser for the parts of POSIX shell syntax that decide how a command
-//! line runs (design 8.1): lists, pipelines, background jobs, groups,
-//! redirections, command and process substitution, and here-documents.
-//! Control structures and function definitions are not parsed; a line using
-//! them, or one that does not parse, is reported as unclear.
+//! Parses the shell syntax needed for command recognition.
 
-/// A word after quote removal.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Word {
     pub text: String,
-    /// The value depends on expansion (variables, substitutions, globs),
-    /// so `text` is not what the shell will use.
     pub dynamic: bool,
-    /// Contains a process substitution, which the command sees as a pipe.
     pub process: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Redirect {
-    /// The operator, such as `>`, `>>`, `<`, `2>`, `&>`, `>&`, `<<`.
     pub op: String,
     pub target: Word,
 }
 
 impl Redirect {
-    /// The file this redirection writes, if any.
     pub fn written_file(&self) -> Option<&str> {
         let writes = self.op.contains('>') && !self.op.ends_with('&');
         let file = self.target.text.as_str();
         (writes && file != "/dev/null" && !file.starts_with('&')).then_some(file)
     }
 
-    /// The file this redirection reads, if any.
     pub fn read_file(&self) -> Option<&str> {
         matches!(
             self.op.trim_start_matches(|c: char| c.is_ascii_digit()),
@@ -45,17 +34,13 @@ pub struct Simple {
     pub assigns: Vec<(String, Word)>,
     pub words: Vec<Word>,
     pub redirects: Vec<Redirect>,
-    /// Command substitutions, which run before the command.
     pub substitutions: Vec<Ast>,
-    /// Process substitutions, which run alongside it.
     pub processes: Vec<Ast>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sep {
-    /// `;`, newline, `&&` or `||`: the next item starts after this one.
     Then,
-    /// `&`: this item runs in the background.
     Background,
 }
 
@@ -64,7 +49,6 @@ pub enum Ast {
     Simple(Simple),
     Pipeline(Vec<Ast>),
     List(Vec<(Ast, Sep)>),
-    /// `( ... )` or `{ ...; }`, with redirections applying to the whole.
     Group {
         inner: Box<Ast>,
         redirects: Vec<Redirect>,
@@ -72,7 +56,6 @@ pub enum Ast {
     },
 }
 
-/// Why a line could not be analyzed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unclear(pub String);
 
@@ -97,12 +80,9 @@ const RESERVED: &[&str] = &[
 struct Parser {
     s: Vec<char>,
     i: usize,
-    /// Here-documents whose bodies start after the next newline:
-    /// (delimiter, strip leading tabs, quoted).
     heredocs: Vec<(String, bool, bool)>,
 }
 
-/// What ends a list: end of input, `)` or the word `}`.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum End {
     Paren,
@@ -143,7 +123,6 @@ impl Parser {
         }
     }
 
-    /// Whether the next word is `}` standing alone.
     fn at_close_brace(&self) -> bool {
         self.peek() == Some('}') && self.peek_at(1).is_none_or(|c| " \t\n;&|)".contains(c))
     }
@@ -185,8 +164,6 @@ impl Parser {
         })
     }
 
-    /// Skips blanks and newlines, reading here-document bodies after each
-    /// newline.
     fn skip_separators(&mut self) -> Result<(), Unclear> {
         loop {
             self.skip_blanks();
@@ -299,7 +276,6 @@ impl Parser {
             let start = self.i;
             let word = self.word(&mut cmd)?;
             if cmd.words.is_empty() {
-                // `[[` reads as a glob, so dynamic words are checked too.
                 if RESERVED.contains(&word.text.as_str()) {
                     return unclear(format!("shell keyword {}", word.text));
                 }
@@ -346,7 +322,6 @@ impl Parser {
             self.i = start;
             return Ok(None);
         };
-        // `<(` and `>(` are process substitutions.
         if op.is_empty() && matches!(*found, "<" | ">") && self.peek_at(1) == Some('(') {
             self.i = start;
             return Ok(None);
@@ -488,7 +463,6 @@ impl Parser {
             }
             Some('{') => self.skip_balanced('{', '}', "unterminated ${"),
             Some('\'') => {
-                // $'...': ANSI-C quoting, a literal.
                 w.dynamic = false;
                 self.i += 1;
                 loop {
@@ -573,7 +547,6 @@ impl Parser {
     }
 }
 
-/// `NAME=value` written without quotes in the name.
 fn assignment(word: &Word, raw: &str) -> Option<(String, Word)> {
     let eq = raw.find('=')?;
     let name = &raw[..eq];

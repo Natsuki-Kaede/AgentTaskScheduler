@@ -1,5 +1,4 @@
-//! The scheduling loop: a round every second and after every change, which
-//! commits leases for the jobs `sched::decide` admits.
+//! Schedules waiting jobs and commits their leases.
 
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
@@ -30,7 +29,6 @@ pub async fn run(state: App) {
     }
 }
 
-/// One round.
 pub(super) fn round(state: &App) -> Result<()> {
     let snapshot = state
         .measurements
@@ -50,7 +48,6 @@ pub(super) fn round(state: &App) -> Result<()> {
         return Ok(());
     }
     let Some(system) = snapshot.system.clone() else {
-        // Nothing measured yet: wait for the first sample.
         return Ok(());
     };
     let capacity = Capacity {
@@ -140,8 +137,6 @@ pub(super) fn round(state: &App) -> Result<()> {
         match &verdict {
             Verdict::Admit => {
                 let reserved = by_id[id.as_str()].reserved;
-                // Every job may use all cores; the system shares them
-                // (design 10.5).
                 let parallelism = system.cores;
                 match store.admit(&id, reserved, parallelism) {
                     Ok(()) => {
@@ -149,7 +144,6 @@ pub(super) fn round(state: &App) -> Result<()> {
                         changed = true;
                         continue;
                     }
-                    // Canceled or ended since the round began.
                     Err(e) if e.downcast_ref::<Conflict>().is_some() => continue,
                     Err(e) => return Err(e),
                 }
@@ -202,7 +196,6 @@ mod tests {
         };
         let mut store = state.store();
         let job = store.create_submission(&new).unwrap().job;
-        // This test process stands in for the executor.
         let me = std::process::id() as i64;
         store
             .set_executor(&job, me, &procinfo::start_time(me as i32).unwrap())
@@ -253,15 +246,12 @@ mod tests {
             "every job may use all cores"
         );
 
-        // The next job starts at once while 8G are free.
         let b = submit(&state, G, &[]);
         let too_big = submit(&state, 20 * G, &[]);
         round(&state).unwrap();
         assert_eq!(job_state(&state, &b), "admitted");
         assert_eq!(job_state(&state, &too_big), "capacity_insufficient");
 
-        // When the reservations of the running jobs leave too little, the
-        // next waits for memory.
         state
             .measurements
             .lock()
@@ -277,7 +267,6 @@ mod tests {
             crate::domain::resource::Reason::Memory { .. }
         ));
 
-        // A failed predecessor blocks; the ended jobs leave room for b2.
         for job in [&a, &a2, &b] {
             let code = if job == &a { 1 } else { 0 };
             state
@@ -292,7 +281,6 @@ mod tests {
         state.store().unblock(&c).unwrap();
         assert_eq!(job_state(&state, &c), "queued");
 
-        // Pressure holds admission.
         state
             .store()
             .finish(&b2, crate::domain::job::JobState::Completed, Some(0))
@@ -305,7 +293,6 @@ mod tests {
         );
         state.pressure.lock().unwrap().pressured = false;
 
-        // While executors reconnect after a restart, nothing is admitted.
         state.expect_reconnects(["gone".to_string()].into(), Duration::from_secs(60));
         round(&state).unwrap();
         assert_eq!(

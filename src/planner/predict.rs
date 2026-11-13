@@ -1,18 +1,10 @@
-//! Resource prediction for a command line (design 8.3, user decisions 1a
-//! and 1b). Each figure comes from the most specific measured history: the
-//! same command in the same project, then the same tool and subcommand in
-//! the project, then anywhere, then the profile, then a default. Stages
-//! that cannot overlap take the larger peak and add their durations; work
-//! that may run at the same time adds its memory and takes the longest
-//! duration; an unclear line gets the conservative value.
+//! Predicts memory use and duration from measured history and tool profiles.
 
 use crate::profile::{Class, Profiles};
 use crate::recognize::{Analysis, Node, Segment};
 
 use crate::domain::resource::{HistorySample, Prediction};
 
-/// `--hint mem=6G`: the agent's own estimate, used only where it is higher
-/// than the prediction.
 pub fn parse_hint(text: &str) -> Result<u64, String> {
     match text.trim().split_once('=') {
         Some(("mem", value)) => crate::profile::parse_size(value),
@@ -20,14 +12,9 @@ pub fn parse_hint(text: &str) -> Result<u64, String> {
     }
 }
 
-/// Memory assumed for commands with no measured history and no figure in
-/// their profile.
 pub struct Defaults {
     pub light: u64,
     pub medium: u64,
-    /// For unknown and heavy commands (design 8.3). A running job's
-    /// reservation falls to what it is measured using, so a high guess is
-    /// held only briefly.
     pub conservative: u64,
 }
 
@@ -41,7 +28,6 @@ impl Default for Defaults {
     }
 }
 
-/// Measured history for one lookup.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Stats {
     pub samples: usize,
@@ -56,8 +42,6 @@ impl Stats {
         Self::from_samples(&mem, &seconds)
     }
 
-    /// Fewer than five samples: the largest × 1.3; otherwise the 95th
-    /// percentile (design 8.3).
     pub fn from_samples(mem: &[u64], seconds: &[f64]) -> Stats {
         fn pick(mut v: Vec<f64>) -> Option<f64> {
             if v.is_empty() {
@@ -78,18 +62,13 @@ impl Stats {
     }
 }
 
-/// What to look up, from most to least specific.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lookup<'a> {
-    /// The same command line in the same project.
     Line,
-    /// The same tool and subcommand in the same project.
     ProjectKey(&'a str),
-    /// The same tool and subcommand anywhere.
     GlobalKey(&'a str),
 }
 
-/// The tool and subcommand of a command, which history is kept under.
 pub fn key(s: &Segment) -> Option<String> {
     let tool = s.tool.as_ref()?;
     Some(match &s.subcommand {
@@ -98,8 +77,6 @@ pub fn key(s: &Segment) -> Option<String> {
     })
 }
 
-/// The history key of a line made of one command, whose measurements
-/// belong to that command alone.
 pub fn line_key(analysis: &Analysis) -> Option<String> {
     match (&analysis.structure, analysis.segments.as_slice()) {
         (Some(_), [only]) => key(only),
@@ -115,9 +92,7 @@ struct Need {
 
 struct Flow {
     need: Need,
-    /// Work that can still overlap the next node, even across nested lists.
     background: u64,
-    /// When the foreground proceeds, separately from background completion.
     foreground_seconds: Option<f64>,
 }
 
@@ -187,9 +162,6 @@ fn combine(node: &Node, needs: &[Need]) -> Flow {
             flow
         }
         Node::Seq { items } => {
-            // A background stage keeps running until the end of the line:
-            // its resources add to everything after it, and it ends its own
-            // time after it starts. Foreground stages add their times.
             let mut background = 0;
             let mut peak = 0;
             let mut elapsed = Some(0.0f64);
@@ -242,7 +214,6 @@ pub fn predict(
             seconds: None,
         },
     };
-    // The whole line measured before beats any combination of its parts.
     let line = history(Lookup::Line);
     need.mem = line.mem.unwrap_or(need.mem);
     need.seconds = line.seconds.or(need.seconds);
@@ -285,7 +256,6 @@ mod tests {
 
     #[test]
     fn combines_by_structure() {
-        // cargo-build 3G, cargo-test 4G, make 2G (built-in profiles).
         assert_eq!(
             predict_line("cargo build && cargo test", "").mem,
             4 * G,
@@ -360,13 +330,11 @@ mod tests {
 
     #[test]
     fn looks_up_from_specific_to_general() {
-        // The same line measured before wins.
         let p = with_history("cargo build && cargo test", "", |l| match l {
             Lookup::Line => stats(Some(G), 50.0),
             _ => stats(Some(9 * G), 99.0),
         });
         assert_eq!((p.mem, p.seconds), (G, Some(50.0)));
-        // Otherwise per command: the project first, then anywhere.
         let p = with_history("cargo build && cargo test", "", |l| match l {
             Lookup::ProjectKey("cargo build") => stats(Some(5 * G), 30.0),
             Lookup::GlobalKey("cargo build") => stats(Some(9 * G), 99.0),
@@ -378,14 +346,11 @@ mod tests {
             (5 * G, Some(50.0)),
             "one after another: larger peak, summed time"
         );
-        // A part without history leaves the time unknown and its memory
-        // from the profile (cargo-test: 4G).
         let p = with_history("cargo build && cargo test", "", |l| match l {
             Lookup::GlobalKey("cargo build") => stats(Some(G), 30.0),
             _ => Stats::default(),
         });
         assert_eq!((p.mem, p.seconds), (4 * G, None));
-        // A hint still only raises a measured figure.
         let p = with_history("make", "mem=8G", |_| stats(Some(G), 1.0));
         assert_eq!(p.mem, 8 * G);
     }
@@ -408,8 +373,6 @@ mod tests {
             Some(40.0),
             "sequential: the sum"
         );
-        // Started first in the background, the test ends at 30 s, after
-        // the foreground's 10 s of make and 1 s of wait.
         assert_eq!(
             with_history("cargo test & make; wait", "", secs).seconds,
             Some(30.0)

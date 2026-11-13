@@ -1,4 +1,4 @@
-//! Measured history for prediction (design 8.3): successful jobs from the
+//! Measured history for prediction: successful jobs from the
 //! last 90 days, most recent first.
 
 use std::time::SystemTime;
@@ -9,7 +9,6 @@ use rusqlite::params;
 use super::Store;
 use crate::domain::resource::HistorySample;
 
-/// Enough recent runs for a percentile.
 const LIMIT: i64 = 200;
 
 fn seconds_between(start: &str, end: &str) -> Option<f64> {
@@ -21,7 +20,6 @@ fn seconds_between(start: &str, end: &str) -> Option<f64> {
 }
 
 impl Store {
-    /// Stats over completed jobs matching every given field.
     pub fn history(
         &self,
         project: Option<&str>,
@@ -146,7 +144,6 @@ mod tests {
             Stats::default()
         );
 
-        // With five runs or more, the 95th percentile replaces max x 1.3.
         for peak in [10, 20, 30, 40, 50, 60] {
             run(&mut store, "/c", "make", "make", peak, "completed");
         }

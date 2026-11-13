@@ -41,8 +41,6 @@ pub fn plan(
     })
 }
 
-/// Whether `args` set a parallelism flag such as `-j8`, `-j 8`, a bare `-j`
-/// or `--max-workers=4`.
 fn sets_flag(args: &[String], flag: &str) -> bool {
     args.iter().any(|a| {
         a.strip_prefix(flag)
@@ -50,9 +48,6 @@ fn sets_flag(args: &[String], flag: &str) -> bool {
     })
 }
 
-/// Parallelism controls for a line (design 10.5): the variables to set to
-/// the leased parallelism and whether to offer a jobserver pool. A line
-/// that sets its own parallelism gets neither.
 fn parallelism(analysis: &Analysis, profiles: &Profiles) -> (Vec<String>, bool) {
     let (mut env, mut jobserver) = (Vec::new(), false);
     for seg in &analysis.segments {

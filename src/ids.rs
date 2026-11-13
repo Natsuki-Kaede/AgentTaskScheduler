@@ -2,7 +2,6 @@
 
 use rand::RngExt;
 
-/// Returns `prefix` followed by 20 random lowercase alphanumeric characters.
 pub fn new(prefix: &str) -> String {
     const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
     let mut rng = rand::rng();

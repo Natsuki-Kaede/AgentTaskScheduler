@@ -1,3 +1,5 @@
+// Tests reminders against an installed DSH runtime.
+
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { once } from 'node:events';
@@ -13,8 +15,6 @@ const { apply, hook } = await import(process.env.DSH_ATS_PLUGIN ?? new URL('../i
 const execute = promisify(execFile);
 const quote = (text) => `'${text.replaceAll("'", "'\\''")}'`;
 
-// Opt in with an installed DSH runtime package.json. Run through Electron's
-// Node mode for app.asar. All daemon data and shell work stay in a temp directory.
 test('installed DSH runs native bash, resumes a pending turn and delivers completion once',
   { skip: !process.env.DSH_RUNTIME_PACKAGE, timeout: 30_000 }, async (t) => {
     const require = createRequire(process.env.DSH_RUNTIME_PACKAGE);

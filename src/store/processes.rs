@@ -50,7 +50,6 @@ impl Store {
         Ok(members)
     }
 
-    /// Commit only membership changes; stale observations cannot revive ended jobs.
     pub fn commit_process_members(&mut self, members: &Memberships) -> Result<()> {
         let tx = self.conn.transaction()?;
         let held: BTreeSet<String> = tx

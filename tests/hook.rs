@@ -1,4 +1,4 @@
-//! Reminders and runs through the real binary (design 6.1–6.3).
+//! Tests agent reminders and submissions through the CLI.
 
 use std::io::Write;
 use std::process::{Command, Output, Stdio};
@@ -7,7 +7,6 @@ fn ats(home: &std::path::Path, args: &[&str], stdin: &str, env: &[(&str, &str)])
     let mut child = Command::new(env!("CARGO_BIN_EXE_ats"))
         .args(args)
         .env("ATS_HOME", home)
-        // Tests may themselves run inside an ats job.
         .env_remove("ATS_JOB_ID")
         .env_remove("CODEX_SESSION_ID")
         .env_remove("CLAUDE_CODE_SESSION_ID")
@@ -29,7 +28,6 @@ fn ats(home: &std::path::Path, args: &[&str], stdin: &str, env: &[(&str, &str)])
 
 #[test]
 fn runs_light_commands_directly() {
-    // No daemon is running: light commands never contact one.
     let dir = tempfile::tempdir().unwrap();
     let out = ats(dir.path(), &["run", "--sh", "echo light; exit 4"], "", &[]);
     assert_eq!(out.status.code(), Some(4));
@@ -40,7 +38,6 @@ fn runs_light_commands_directly() {
 
 #[test]
 fn runs_directly_inside_a_job() {
-    // No daemon is running: inside a job, `ats run` never contacts one.
     let dir = tempfile::tempdir().unwrap();
     let out = ats(
         dir.path(),
@@ -142,7 +139,6 @@ fn reminds_agent(agent: &str) {
         )
     };
 
-    // Without a daemon, every reminder lets the agent through.
     assert!(stop(false).is_null() && prompt().is_null());
 
     let _daemon = Daemon(
@@ -158,7 +154,6 @@ fn reminds_agent(agent: &str) {
     wait_until("daemon", || {
         ats(&home, &["status"], "", &[]).status.success()
     });
-    // The session comes from the agent's environment.
     let run = |args: &[&str]| {
         let mut all = vec!["run"];
         all.extend_from_slice(args);
@@ -167,14 +162,12 @@ fn reminds_agent(agent: &str) {
             "codex" => "CODEX_SESSION_ID",
             _ => "CLAUDE_CODE_SESSION_ID",
         };
-        // DSH's per-execution session overrides an inherited outer Codex ID.
         let mut env = vec![(variable, "s1")];
         if agent == "dsh" {
             env.push(("CODEX_SESSION_ID", "outer-session"));
         }
         ats(&home, &all, "", &env)
     };
-    // A result the agent already got is not mentioned; one left running is.
     assert!(run(&["--sh", "perl -e 1; echo done"]).status.success());
     let out = run(&["--no-wait", "--sh", "perl -e 'sleep 2'"]);
     assert_eq!(out.status.code(), Some(75));
@@ -244,8 +237,6 @@ fn wait_returns_the_commands_output_and_exit_code() {
     );
 }
 
-/// Stops the daemon even when an assertion fails, so it does not outlive
-/// the test.
 struct Daemon(std::process::Child);
 
 impl Drop for Daemon {

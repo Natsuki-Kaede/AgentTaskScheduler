@@ -1,5 +1,5 @@
-# Homebrew formula for the tap. scripts/formula.sh fills in the version
-# and the checksums of the release archives.
+# Homebrew formula template for release archives.
+
 class Ats < Formula
   desc "Queues resource-heavy commands from AI agents and starts them by available memory"
   homepage "https://github.com/Natsuki-Kaede/AgentTaskScheduler"

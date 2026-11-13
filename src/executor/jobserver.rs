@@ -1,6 +1,4 @@
-//! A job's jobserver pool (design 10.5), held by its executor: a fifo in
-//! the form of make 4.4 (`--jobserver-auth=fifo:PATH`), which make, ninja
-//! 1.13+ and cargo use. Each client also runs one job without a token.
+//! Provides the executor's FIFO jobserver pool.
 
 use std::ffi::CString;
 use std::os::unix::ffi::OsStrExt;
@@ -14,8 +12,6 @@ pub struct Pool {
 }
 
 impl Pool {
-    /// Creates the fifo with `tokens` tokens. The executor keeps it open
-    /// for reading and writing, so clients never see it closed.
     pub fn create(dir: &std::path::Path, job: &str, tokens: u32) -> Result<Pool> {
         crate::paths::create_private_dir(dir)?;
         let path = dir.join(format!("{job}.fifo"));
@@ -37,8 +33,6 @@ impl Pool {
         Ok(pool)
     }
 
-    /// `MAKEFLAGS` for clients: `-j` covers the tokens plus one implicit
-    /// slot.
     pub fn makeflags(&self, tokens: u32) -> String {
         format!(
             " -j{} --jobserver-auth=fifo:{}",
@@ -73,7 +67,6 @@ impl Drop for Pool {
 mod tests {
     use super::*;
 
-    /// Tokens a client can take now, read without blocking and returned.
     fn available(path: &std::path::Path) -> usize {
         let c = CString::new(path.as_os_str().as_bytes()).unwrap();
         // SAFETY: opens the test's fifo without blocking.

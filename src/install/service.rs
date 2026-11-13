@@ -1,6 +1,4 @@
-//! The login service that starts `ats daemon` and starts it again if it
-//! fails (design 12): a LaunchAgent on macOS, a systemd user unit on Linux.
-//! A data directory chosen with `ATS_HOME` is passed on.
+//! Manages the daemon login service on macOS and Linux.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -14,7 +12,6 @@ pub use launchd::*;
 #[cfg(target_os = "linux")]
 pub use systemd::*;
 
-// Tests build both backends; the other platform's one is only partly used.
 #[cfg(any(target_os = "macos", test))]
 #[cfg_attr(test, allow(dead_code))]
 mod launchd {
@@ -86,8 +83,6 @@ mod launchd {
             .is_ok_and(|s| s.success())
     }
 
-    /// Unloads the agent and waits until launchd lets it go: launchd can
-    /// still hold it when bootout returns, and a bootstrap then fails.
     pub fn unload(_home: &Path) -> Result<()> {
         let (_, target) = target();
         if loaded(&target) {
@@ -104,8 +99,6 @@ mod launchd {
         Ok(())
     }
 
-    /// Loads the agent in this user's session. A loaded agent is reloaded
-    /// only when `changed`: reloading restarts the daemon.
     pub fn load(home: &Path, changed: bool, out: &mut impl Write) -> Result<()> {
         let (domain, target) = target();
         if !changed && loaded(&target) {
@@ -136,8 +129,6 @@ mod systemd {
         home.join(".config/systemd/user").join(UNIT)
     }
 
-    /// systemd unit files take C-style escapes in quoted values; `%` starts
-    /// a specifier.
     fn quoted(s: &str) -> String {
         let s = s
             .replace('\\', "\\\\")
@@ -172,7 +163,6 @@ mod systemd {
         Ok(())
     }
 
-    /// Stops and disables the unit while its file still exists.
     pub fn unload(home: &Path) -> Result<()> {
         if file(home).exists() {
             systemctl(&["disable", "--now", UNIT])?;
@@ -180,8 +170,6 @@ mod systemd {
         Ok(())
     }
 
-    /// Enables and starts the unit. A running unit is restarted only when
-    /// `changed`: a restart restarts the daemon.
     pub fn load(_home: &Path, changed: bool, out: &mut impl Write) -> Result<()> {
         systemctl(&["daemon-reload"])?;
         systemctl(&["enable", UNIT])?;

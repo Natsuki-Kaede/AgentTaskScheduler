@@ -1,5 +1,5 @@
 //! Redaction of secret-looking values before a command is stored or shown
-//! (design 11).
+//!.
 
 const SECRET_WORDS: &[&str] = &[
     "token",
@@ -17,8 +17,6 @@ fn looks_secret(name: &str) -> bool {
     SECRET_WORDS.iter().any(|w| lower.contains(w)) || lower.ends_with("_key") || lower == "key"
 }
 
-/// Replaces the value of `NAME=value`, `--name=value` and `--name value`
-/// words whose name looks like a secret, and the word after `Bearer`.
 pub fn command_words(words: &[String]) -> Vec<String> {
     redact_words(words, 0)
 }
@@ -58,8 +56,6 @@ fn redact_words(words: &[String], depth: usize) -> Vec<String> {
     out
 }
 
-/// Shell command strings remain one argv word after outer quote removal.
-/// Redact them before applying ordinary flag/value rules, including wrappers.
 fn redact_shell_arguments(words: &mut [String], depth: usize) {
     for index in 0..words.len() {
         let program = words[index]
@@ -111,9 +107,6 @@ fn redact_header(word: &str) -> Option<String> {
     .then(|| format!("{prefix}{name}: [redacted]"))
 }
 
-/// Redacts complete shell words, including quoted and escaped whitespace.
-/// Unclosed quotes have no reliable word boundary, so none of that source
-/// is stored. The result is for display only.
 pub fn shell_source(source: &str) -> String {
     shell_source_at(source, 0)
 }
